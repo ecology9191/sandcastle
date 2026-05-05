@@ -21,7 +21,7 @@ const TEMPLATES: TemplateMetadata[] = [
   },
   {
     name: "simple-loop",
-    description: "Picks GitHub issues one by one and closes them",
+    description: "Picks backlog issues one by one and closes them",
   },
   {
     name: "sequential-reviewer",
@@ -273,8 +273,8 @@ GH_TOKEN=`,
     label: "Beads",
     templateArgs: {
       LIST_TASKS_COMMAND: "bd ready --json",
-      VIEW_TASK_COMMAND: "bd show <ID>",
-      CLOSE_TASK_COMMAND: `bd close <ID> "Completed by Sandcastle"`,
+      VIEW_TASK_COMMAND: "bd show <ID> --json && bd comments <ID> --json",
+      CLOSE_TASK_COMMAND: `bd close <ID> --reason "Completed by Sandcastle" --json`,
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
     },
     envExample: "",

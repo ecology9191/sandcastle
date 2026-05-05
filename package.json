@@ -1,6 +1,6 @@
 {
-  "name": "@ai-hero/sandcastle",
-  "version": "0.5.7",
+  "name": "@ecology91/sandcastle",
+  "version": "0.5.8",
   "description": "CLI for orchestrating AI agents in isolated sandbox environments",
   "type": "module",
   "main": "./dist/index.js",
@@ -59,7 +59,7 @@
   "packageManager": "npm@10.9.2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/mattpocock/sandcastle"
+    "url": "https://github.com/ecology9191/sandcastle"
   },
   "license": "MIT",
   "devDependencies": {

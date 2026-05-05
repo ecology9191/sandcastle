@@ -1,5 +1,5 @@
-import * as sandcastle from "@ai-hero/sandcastle";
-import { vercel } from "@ai-hero/sandcastle/sandboxes/vercel";
+import * as sandcastle from "@ecology91/sandcastle";
+import { vercel } from "@ecology91/sandcastle/sandboxes/vercel";
 
 const claudeInstallHook = {
   command: "curl -fsSL https://claude.ai/install.sh | bash",

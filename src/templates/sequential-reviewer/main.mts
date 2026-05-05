@@ -1,7 +1,7 @@
 // Sequential Reviewer — implement-then-review loop
 //
 // This template drives a two-phase workflow per issue:
-//   Phase 1 (Implement): A sonnet agent picks an open GitHub issue, works on it
+//   Phase 1 (Implement): A sonnet agent picks an open backlog issue, works on it
 //                        on a dedicated branch, commits the changes, and signals
 //                        completion.
 //   Phase 2 (Review):    A second sonnet agent reviews the branch diff and either
@@ -16,8 +16,8 @@
 // Or add to package.json:
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
 
-import * as sandcastle from "@ai-hero/sandcastle";
-import { docker } from "@ai-hero/sandcastle/sandboxes/docker";
+import * as sandcastle from "@ecology91/sandcastle";
+import { docker } from "@ecology91/sandcastle/sandboxes/docker";
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -48,7 +48,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 1: Implement
   //
-  // A sonnet agent picks the next open GitHub issue, creates a branch, writes
+  // A sonnet agent picks the next open backlog issue, creates a branch, writes
   // the implementation (using RGR: Red → Green → Repeat → Refactor), and
   // commits the result.
   //

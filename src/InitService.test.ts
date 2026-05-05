@@ -31,6 +31,10 @@ const defaultOptions: ScaffoldOptions = {
   model: "claude-opus-4-6",
 };
 
+const BEADS_CLOSE_COMMAND =
+  'bd close <ID> --reason "Completed by Sandcastle" --json';
+const BEADS_VIEW_COMMAND = "bd show <ID> --json && bd comments <ID> --json";
+
 const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
   Effect.runPromise(
     scaffold(repoDir, { ...defaultOptions, ...options }).pipe(
@@ -284,7 +288,7 @@ describe("InitService scaffold", () => {
     await expect(access(join(configDir, "main.mts"))).resolves.toBeUndefined();
   });
 
-  it("blank template main.mts imports from @ai-hero/sandcastle", async () => {
+  it("blank template main.mts imports from @ecology91/sandcastle", async () => {
     const dir = await makeDir();
     await runScaffold(dir, { templateName: "blank" });
 
@@ -292,7 +296,7 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('"@ai-hero/sandcastle"');
+    expect(mainTs).toContain('"@ecology91/sandcastle"');
   });
 
   it("blank template main.mts calls run()", async () => {
@@ -362,7 +366,7 @@ describe("InitService scaffold", () => {
     await expect(access(join(configDir, "prompt.md"))).resolves.toBeUndefined();
   });
 
-  it("simple-loop main.mts imports from @ai-hero/sandcastle", async () => {
+  it("simple-loop main.mts imports from @ecology91/sandcastle", async () => {
     const dir = await makeDir();
     await runScaffold(dir, { templateName: "simple-loop" });
 
@@ -370,7 +374,7 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('"@ai-hero/sandcastle"');
+    expect(mainTs).toContain('"@ecology91/sandcastle"');
   });
 
   it("simple-loop main.mts contains sandcastle.run() with expected options", async () => {
@@ -423,7 +427,7 @@ describe("InitService scaffold", () => {
       ).resolves.toBeUndefined();
     });
 
-    it("main.mts imports from @ai-hero/sandcastle", async () => {
+    it("main.mts imports from @ecology91/sandcastle", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "sequential-reviewer" });
 
@@ -431,7 +435,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(mainTs).toContain('"@ai-hero/sandcastle"');
+      expect(mainTs).toContain('"@ecology91/sandcastle"');
     });
 
     it("main.mts calls sandcastle.run() twice per iteration (implement + review)", async () => {
@@ -825,7 +829,7 @@ describe("InitService scaffold", () => {
       expect(mainTs).toContain("sandcastle");
     });
 
-    it("main.mts imports from @ai-hero/sandcastle", async () => {
+    it("main.mts imports from @ecology91/sandcastle", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner" });
 
@@ -833,7 +837,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(mainTs).toContain('"@ai-hero/sandcastle"');
+      expect(mainTs).toContain('"@ecology91/sandcastle"');
     });
 
     it("main.mts references the specified model for all factory calls", async () => {
@@ -928,7 +932,7 @@ describe("InitService scaffold", () => {
       ).resolves.toBeUndefined();
     });
 
-    it("main.mts imports from @ai-hero/sandcastle", async () => {
+    it("main.mts imports from @ecology91/sandcastle", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner-with-review" });
 
@@ -936,7 +940,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(mainTs).toContain('"@ai-hero/sandcastle"');
+      expect(mainTs).toContain('"@ecology91/sandcastle"');
     });
 
     it("main.mts uses createSandbox for shared sandbox per branch", async () => {
@@ -1173,8 +1177,13 @@ describe("InitService scaffold", () => {
       expect(manager).toBeDefined();
       expect(manager!.label).toBe("Beads");
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toBe("bd ready --json");
+      expect(manager!.templateArgs.VIEW_TASK_COMMAND).toBe(BEADS_VIEW_COMMAND);
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("bd show");
-      expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain("bd close");
+      expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("bd comments");
+      expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("--json");
+      expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toBe(
+        BEADS_CLOSE_COMMAND,
+      );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("beads");
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("libicu72");
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
@@ -1226,8 +1235,9 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(prompt).toContain("bd ready --json");
-      expect(prompt).toContain("bd close");
+      expect(prompt).toContain(BEADS_CLOSE_COMMAND);
       expect(prompt).not.toContain("gh issue");
+      expect(prompt).not.toMatch(/GitHub issues?/);
       expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
     });
@@ -1323,8 +1333,9 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(prompt).toContain("bd ready --json");
-      expect(prompt).toContain("bd close");
+      expect(prompt).toContain(BEADS_CLOSE_COMMAND);
       expect(prompt).not.toContain("gh issue");
+      expect(prompt).not.toMatch(/GitHub issues?/);
       expect(prompt).not.toContain("{{LIST_TASKS_COMMAND}}");
       expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
     });
@@ -1397,6 +1408,23 @@ describe("InitService scaffold", () => {
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
     });
 
+    it("parallel-planner plan-prompt example uses a non-numeric string id", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "parallel-planner",
+      });
+
+      const planPrompt = await readFile(
+        join(dir, ".sandcastle", "plan-prompt.md"),
+        "utf-8",
+      );
+      expect(planPrompt).toContain('"id": "bd-a1b2"');
+      expect(planPrompt).toContain(
+        '"branch": "sandcastle/issue-bd-a1b2-fix-auth-bug"',
+      );
+      expect(planPrompt).not.toContain('"id": "42"');
+    });
+
     it("parallel-planner main.mts uses id:string and TASK_ID", async () => {
       const dir = await makeDir();
       await runScaffold(dir, {
@@ -1454,7 +1482,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "implement-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("bd show");
+      expect(prompt).toContain(BEADS_VIEW_COMMAND);
       expect(prompt).not.toContain("gh issue");
       expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
@@ -1485,7 +1513,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "merge-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("bd close");
+      expect(prompt).toContain(BEADS_CLOSE_COMMAND);
       expect(prompt).not.toContain("gh issue");
       expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
     });
@@ -1548,6 +1576,23 @@ describe("InitService scaffold", () => {
       expect(planPrompt).toContain("bd ready --json");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
+    });
+
+    it("parallel-planner-with-review plan-prompt example uses a non-numeric string id", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "parallel-planner-with-review",
+      });
+
+      const planPrompt = await readFile(
+        join(dir, ".sandcastle", "plan-prompt.md"),
+        "utf-8",
+      );
+      expect(planPrompt).toContain('"id": "bd-a1b2"');
+      expect(planPrompt).toContain(
+        '"branch": "sandcastle/issue-bd-a1b2-fix-auth-bug"',
+      );
+      expect(planPrompt).not.toContain('"id": "42"');
     });
 
     it("parallel-planner-with-review main.mts uses id:string and TASK_ID", async () => {
@@ -1621,7 +1666,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "implement-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("bd show");
+      expect(prompt).toContain(BEADS_VIEW_COMMAND);
       expect(prompt).not.toContain("gh issue");
       expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
@@ -1652,7 +1697,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "merge-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("bd close");
+      expect(prompt).toContain(BEADS_CLOSE_COMMAND);
       expect(prompt).not.toContain("gh issue");
       expect(prompt).not.toContain("{{CLOSE_TASK_COMMAND}}");
     });
@@ -1742,6 +1787,34 @@ describe("InitService scaffold", () => {
       expect(dockerfile).toContain("@mariozechner/pi-coding-agent");
       expect(dockerfile).not.toContain("GitHub CLI");
     });
+
+    it("scaffold with beads + opencode agent combines opencode and beads setup", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        agent: opencodeAgent,
+        model: opencodeAgent.defaultModel,
+        backlogManager: getBacklogManager("beads"),
+      });
+
+      const configDir = join(dir, ".sandcastle");
+      const dockerfile = await readFile(join(configDir, "Dockerfile"), "utf-8");
+      expect(dockerfile).toContain("opencode-ai");
+      expect(dockerfile).toContain("beads");
+      expect(dockerfile).toContain("libicu72");
+      expect(dockerfile).not.toContain("GitHub CLI");
+
+      const envExample = await readFile(
+        join(configDir, ".env.example"),
+        "utf-8",
+      );
+      expect(envExample).toContain("OPENCODE_API_KEY=");
+      expect(envExample).not.toContain("GH_TOKEN=");
+
+      const main = await readFile(join(configDir, "main.mts"), "utf-8");
+      expect(main).toContain("opencode(");
+      expect(main).not.toContain("claudeCode");
+    });
   });
 
   // --- ESM extension detection ---
@@ -1771,7 +1844,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(mainContent).toContain("@ai-hero/sandcastle");
+      expect(mainContent).toContain("@ecology91/sandcastle");
     });
 
     it("scaffolds main.mts when package.json has type: commonjs", async () => {
@@ -1816,7 +1889,7 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.ts"),
         "utf-8",
       );
-      expect(mainContent).toContain("@ai-hero/sandcastle");
+      expect(mainContent).toContain("@ecology91/sandcastle");
       expect(mainContent).toContain('claudeCode("claude-opus-4-6")');
     });
 
