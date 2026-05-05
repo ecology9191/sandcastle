@@ -303,6 +303,12 @@ export interface SandboxProviderEntry {
   readonly containerfileName: string;
   /** CLI namespace for build/remove commands (e.g. "docker" or "podman") */
   readonly cliNamespace: string;
+  /** Import path used by scaffolded `.sandcastle/main.*` files */
+  readonly runtimeImportPath: string;
+  /** Factory function used by scaffolded `.sandcastle/main.*` files */
+  readonly runtimeFactoryName: string;
+  /** Human-readable runtime name used by scaffolded comments */
+  readonly runtimeLabel: string;
 }
 
 const SANDBOX_PROVIDER_REGISTRY: SandboxProviderEntry[] = [
@@ -311,12 +317,18 @@ const SANDBOX_PROVIDER_REGISTRY: SandboxProviderEntry[] = [
     label: "Docker",
     containerfileName: "Dockerfile",
     cliNamespace: "docker",
+    runtimeImportPath: "@ecology91/sandcastle/sandboxes/docker",
+    runtimeFactoryName: "docker",
+    runtimeLabel: "Docker",
   },
   {
     name: "podman",
     label: "Podman",
     containerfileName: "Containerfile",
     cliNamespace: "podman",
+    runtimeImportPath: "@ecology91/sandcastle/sandboxes/podman",
+    runtimeFactoryName: "podman",
+    runtimeLabel: "Podman",
   },
 ];
 
@@ -430,16 +442,21 @@ const copyTemplateFiles = (
   });
 
 /**
- * Replace the agent factory import and call in a scaffolded main.ts.
+ * Replace provider and agent factories in a scaffolded main.ts.
  *
  * Templates use `claudeCode` as the default factory. When a different agent or
  * model is selected, this function rewrites the import and factory calls.
  */
+const DEFAULT_RUNTIME_IMPORT_PATH = "@ecology91/sandcastle/sandboxes/docker";
+const DEFAULT_RUNTIME_FACTORY_NAME = "docker";
+const DEFAULT_RUNTIME_LABEL = "Docker";
+
 const rewriteMainTs = (
   configDir: string,
   agent: AgentEntry,
   model: string,
   mainFilename: string,
+  sandboxProvider: SandboxProviderEntry,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -458,6 +475,23 @@ const rewriteMainTs = (
     // When the target is main.ts, rewrite those references.
     if (mainFilename === "main.ts") {
       content = content.replace(/main\.mts/g, "main.ts");
+    }
+
+    // Templates use Docker as the placeholder runtime. Keep substitutions
+    // constrained to the known import, factory calls, and runtime comment.
+    content = content.replace(
+      `import { ${DEFAULT_RUNTIME_FACTORY_NAME} } from "${DEFAULT_RUNTIME_IMPORT_PATH}";`,
+      `import { ${sandboxProvider.runtimeFactoryName} } from "${sandboxProvider.runtimeImportPath}";`,
+    );
+    content = content.replace(
+      new RegExp(`\\b${DEFAULT_RUNTIME_FACTORY_NAME}\\(`, "g"),
+      `${sandboxProvider.runtimeFactoryName}(`,
+    );
+    if (sandboxProvider.runtimeFactoryName !== DEFAULT_RUNTIME_FACTORY_NAME) {
+      content = content.replace(
+        `${DEFAULT_RUNTIME_LABEL} is the default runtime`,
+        `${sandboxProvider.runtimeLabel} is the selected runtime`,
+      );
     }
 
     // Replace factory function name in imports (e.g. claudeCode → pi)
@@ -677,8 +711,14 @@ export const scaffold = (
       { concurrency: "unbounded" },
     );
 
-    // Rewrite main file with the selected agent factory and model
-    yield* rewriteMainTs(configDir, agent, model, mainFilename);
+    // Rewrite main file with the selected sandbox, agent factory, and model
+    yield* rewriteMainTs(
+      configDir,
+      agent,
+      model,
+      mainFilename,
+      sandboxProvider,
+    );
 
     // Replace backlog manager template arguments in all text files (must run before label stripping)
     yield* substituteTemplateArgs(configDir, backlogManager);

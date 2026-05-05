@@ -1,5 +1,11 @@
 # @ecology91/sandcastle
 
+## 0.5.9
+
+### Patch Changes
+
+- Update Podman init scaffolds to import and call the Podman sandbox provider.
+
 ## 0.5.8
 
 ### Patch Changes

@@ -1954,6 +1954,26 @@ describe("InitService scaffold", () => {
       expect(dockerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
     });
 
+    it("selecting docker leaves simple-loop main.mts using docker", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, {
+        templateName: "simple-loop",
+        sandboxProvider: dockerProvider,
+      });
+
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(main).toContain(
+        'import { docker } from "@ecology91/sandcastle/sandboxes/docker";',
+      );
+      expect(main).toContain("sandbox: docker()");
+      expect(main).toContain("Docker is the default runtime");
+      expect(main).not.toContain("sandboxes/podman");
+      expect(main).not.toContain("sandbox: podman()");
+    });
+
     it("selecting podman writes Containerfile to .sandcastle/", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { sandboxProvider: podmanProvider });
@@ -1965,6 +1985,47 @@ describe("InitService scaffold", () => {
       expect(containerfile).toContain("FROM node:22-bookworm");
       expect(containerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
     });
+
+    it("selecting podman rewrites the default scaffolded main.mts runtime", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { sandboxProvider: podmanProvider });
+
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      expect(main).toContain(
+        'import { podman } from "@ecology91/sandcastle/sandboxes/podman";',
+      );
+      expect(main).toContain("sandbox: podman()");
+      expect(main).not.toContain("sandboxes/docker");
+      expect(main).not.toContain("sandbox: docker()");
+    });
+
+    for (const template of listTemplates()) {
+      it(`selecting podman rewrites ${template.name} main.mts runtime`, async () => {
+        const dir = await makeDir();
+        await runScaffold(dir, {
+          templateName: template.name,
+          sandboxProvider: podmanProvider,
+        });
+
+        const main = await readFile(
+          join(dir, ".sandcastle", "main.mts"),
+          "utf-8",
+        );
+        expect(main).toContain(
+          'import { podman } from "@ecology91/sandcastle/sandboxes/podman";',
+        );
+        expect(main).toContain("podman()");
+        expect(main).not.toContain("sandboxes/docker");
+        expect(main).not.toContain("docker()");
+        expect(main).not.toContain("Docker is the default runtime");
+        if (template.name === "simple-loop") {
+          expect(main).toContain("Podman is the selected runtime");
+        }
+      });
+    }
 
     it("selecting podman does not write Dockerfile", async () => {
       const dir = await makeDir();
@@ -2004,6 +2065,11 @@ describe("Sandbox provider registry", () => {
     expect(provider).toBeDefined();
     expect(provider!.containerfileName).toBe("Dockerfile");
     expect(provider!.cliNamespace).toBe("docker");
+    expect(provider!.runtimeImportPath).toBe(
+      "@ecology91/sandcastle/sandboxes/docker",
+    );
+    expect(provider!.runtimeFactoryName).toBe("docker");
+    expect(provider!.runtimeLabel).toBe("Docker");
   });
 
   it("getSandboxProvider returns podman entry", () => {
@@ -2011,6 +2077,11 @@ describe("Sandbox provider registry", () => {
     expect(provider).toBeDefined();
     expect(provider!.containerfileName).toBe("Containerfile");
     expect(provider!.cliNamespace).toBe("podman");
+    expect(provider!.runtimeImportPath).toBe(
+      "@ecology91/sandcastle/sandboxes/podman",
+    );
+    expect(provider!.runtimeFactoryName).toBe("podman");
+    expect(provider!.runtimeLabel).toBe("Podman");
   });
 
   it("getSandboxProvider returns undefined for unknown provider", () => {
