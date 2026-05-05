@@ -1,5 +1,12 @@
 # @ecology91/sandcastle
 
+## 0.5.10
+
+### Patch Changes
+
+- 10e74bd: Fix scaffolded OpenCode sandboxes by wiring the native binary path during image builds and report silent OpenCode exits with a clear agent error.
+- 10e74bd: Fix repeated sync-out from long-lived isolated sandboxes after earlier commits have already been replayed onto the host.
+
 ## 0.5.9
 
 ### Patch Changes
