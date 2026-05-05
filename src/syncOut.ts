@@ -29,6 +29,15 @@ import type { IsolatedSandboxHandle } from "./SandboxProvider.js";
 import { buildRecoveryMessage, type FailedStep } from "./RecoveryMessage.js";
 import { SyncError } from "./errors.js";
 
+const syncOutBaselines = new WeakMap<IsolatedSandboxHandle, string>();
+
+export const setSyncOutBaseline = (
+  handle: IsolatedSandboxHandle,
+  sha: string,
+): void => {
+  syncOutBaselines.set(handle, sha);
+};
+
 /**
  * Execute a command on the host side, returning stdout.
  * Fails with SyncError on non-zero exit.
@@ -100,6 +109,45 @@ const execSandbox = (
       new SyncError({
         message: `Sandbox exec failed: ${command}\n${e instanceof Error ? e.message : String(e)}`,
       }),
+  });
+
+const commitExistsInSandbox = (
+  handle: IsolatedSandboxHandle,
+  sha: string,
+  worktreePath: string,
+): Effect.Effect<boolean, SyncError> =>
+  execSandbox(handle, `git cat-file -e "${sha}^{commit}"`, {
+    cwd: worktreePath,
+  }).pipe(Effect.map((result) => result.exitCode === 0));
+
+const getFormatPatchBase = (
+  handle: IsolatedSandboxHandle,
+  hostHead: string,
+  worktreePath: string,
+): Effect.Effect<string, SyncError> =>
+  Effect.gen(function* () {
+    if (yield* commitExistsInSandbox(handle, hostHead, worktreePath)) {
+      return hostHead;
+    }
+
+    const baseline = syncOutBaselines.get(handle);
+    if (baseline) {
+      if (yield* commitExistsInSandbox(handle, baseline, worktreePath)) {
+        return baseline;
+      }
+
+      return yield* Effect.fail(
+        new SyncError({
+          message: `Sandbox sync baseline ${baseline} is not present in the sandbox`,
+        }),
+      );
+    }
+
+    return yield* Effect.fail(
+      new SyncError({
+        message: `Host HEAD ${hostHead} is not present in the sandbox and no sandbox sync baseline is available`,
+      }),
+    );
   });
 
 /**
@@ -175,8 +223,13 @@ export const syncOut = (
     const sandboxHead = (yield* execOk(handle, "git rev-parse HEAD", {
       cwd: worktreePath,
     })).stdout.trim();
+    const formatPatchBase = yield* getFormatPatchBase(
+      handle,
+      hostHead,
+      worktreePath,
+    );
 
-    const hasCommits = hostHead !== sandboxHead;
+    const hasCommits = formatPatchBase !== sandboxHead;
 
     // Check for uncommitted changes
     const diffResult = yield* execSandbox(handle, "git diff HEAD", {
@@ -203,6 +256,7 @@ export const syncOut = (
 
     // Nothing to sync
     if (!hasCommits && !hasDiff && !hasUntracked) {
+      setSyncOutBaseline(handle, sandboxHead);
       return;
     }
 
@@ -223,7 +277,7 @@ export const syncOut = (
       try {
         yield* execOk(
           handle,
-          `git format-patch "${hostHead}..HEAD" -o "${sandboxPatchDir}"`,
+          `git format-patch "${formatPatchBase}..HEAD" -o "${sandboxPatchDir}"`,
           { cwd: worktreePath },
         );
 
@@ -349,6 +403,7 @@ export const syncOut = (
       });
       console.error(`\n${msg}`);
     } else {
+      setSyncOutBaseline(handle, sandboxHead);
       yield* Effect.tryPromise({
         try: async () => {
           await rm(patchDir, { recursive: true, force: true });

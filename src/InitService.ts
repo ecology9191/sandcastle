@@ -163,6 +163,13 @@ RUN usermod -d /home/agent -m -l agent node
 
 # Install OpenCode CLI (run as root before USER agent)
 RUN npm install -g opencode-ai@latest
+RUN OPENCODE_NATIVE_BIN="$(find "$(npm root -g)/opencode-ai/node_modules" -type f -path "*/opencode-*/bin/opencode" -print -quit)" \\
+  && test -n "$OPENCODE_NATIVE_BIN" \\
+  && ln -sf "$OPENCODE_NATIVE_BIN" /usr/local/bin/opencode-native
+RUN test -x /usr/local/bin/opencode-native \\
+  && /usr/local/bin/opencode-native --version
+
+ENV OPENCODE_BIN_PATH="/usr/local/bin/opencode-native"
 
 USER agent
 

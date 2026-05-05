@@ -127,15 +127,24 @@ const invokeAgent = (
           errorDetail = resultText;
         }
         if (!errorDetail.trim()) {
-          const lines = execResult.stdout
-            .split("\n")
-            .filter((l) => l.trim());
+          const lines = execResult.stdout.split("\n").filter((l) => l.trim());
           errorDetail = lines.slice(-20).join("\n");
         }
         return yield* Effect.fail(
           new AgentError({
             message: `${provider.name} exited with code ${execResult.exitCode}:\n${errorDetail}`,
           }),
+        );
+      }
+
+      if (
+        provider.name === "opencode" &&
+        !resultText.trim() &&
+        !execResult.stdout.trim() &&
+        !execResult.stderr.trim()
+      ) {
+        return yield* Effect.fail(
+          new AgentError({ message: "opencode produced no output" }),
         );
       }
 

@@ -188,6 +188,10 @@ describe("startSandbox", () => {
       await writeFile(join(hostDir, "hang.txt"), "will hang");
 
       const realProvider = testIsolated();
+      let resolveCopyPathStarted: (() => void) | undefined;
+      const copyPathStarted = new Promise<void>((resolve) => {
+        resolveCopyPathStarted = () => resolve();
+      });
       const hangingProvider = createIsolatedSandboxProvider({
         name: "hanging-copy",
         create: async (options) => {
@@ -195,21 +199,17 @@ describe("startSandbox", () => {
           return {
             ...handle,
             copyIn: (hostPath: string, sandboxPath: string) => {
-              // Allow syncIn's copyIn calls (bundle files) to succeed,
-              // but hang on everything else
-              if (sandboxPath.includes("repo.bundle")) {
-                return handle.copyIn(hostPath, sandboxPath);
+              if (hostPath === join(hostDir, "hang.txt")) {
+                resolveCopyPathStarted?.();
+                return new Promise<void>(() => {}); // never resolves
               }
-              return new Promise<void>(() => {}); // never resolves
+              return handle.copyIn(hostPath, sandboxPath);
             },
           };
         },
       });
 
-      // Fork startSandbox and advance the TestClock after syncIn completes.
-      // Container create and syncIn use real promises that resolve in real time.
-      // With TestClock, their withTimeout timers won't fire until we advance,
-      // so they complete successfully. Then we advance past COPY_PATHS_TIMEOUT_MS.
+      // Advance the TestClock only after startSandbox reaches copyPaths.
       const program = Effect.gen(function* () {
         const fiber = yield* Effect.fork(
           startSandbox({
@@ -219,10 +219,7 @@ describe("startSandbox", () => {
             copyPaths: ["hang.txt"],
           }),
         );
-        // Yield to allow real async operations (create, syncIn) to complete
-        yield* Effect.yieldNow();
-        yield* Effect.promise(() => new Promise((r) => setTimeout(r, 2000)));
-        yield* Effect.yieldNow();
+        yield* Effect.promise(() => copyPathStarted);
         // Now advance past the copyPaths timeout
         yield* TestClock.adjust(Duration.millis(COPY_PATHS_TIMEOUT_MS + 1));
         return yield* fiber.await;

@@ -731,23 +731,29 @@ describe("opencode factory", () => {
     expect(command).toContain("--model 'opencode/big-pickle'");
   });
 
-  it("parseStreamLine returns empty array for all input (raw passthrough)", () => {
+  it("parseStreamLine surfaces raw stdout as text events", () => {
     const provider = opencode("opencode/big-pickle");
-    expect(provider.parseStreamLine("some output text")).toEqual([]);
+    expect(provider.parseStreamLine("some output text")).toEqual([
+      { type: "text", text: "some output text\n" },
+    ]);
     expect(provider.parseStreamLine("")).toEqual([]);
     expect(
       provider.parseStreamLine(JSON.stringify({ type: "text", text: "hi" })),
-    ).toEqual([]);
+    ).toEqual([{ type: "text", text: '{"type":"text","text":"hi"}\n' }]);
   });
 
-  it("parseStreamLine returns empty array for non-JSON lines", () => {
+  it("parseStreamLine passes through non-JSON lines", () => {
     const provider = opencode("opencode/big-pickle");
-    expect(provider.parseStreamLine("not json")).toEqual([]);
+    expect(provider.parseStreamLine("not json")).toEqual([
+      { type: "text", text: "not json\n" },
+    ]);
   });
 
-  it("parseStreamLine returns empty array for malformed JSON", () => {
+  it("parseStreamLine passes through malformed JSON", () => {
     const provider = opencode("opencode/big-pickle");
-    expect(provider.parseStreamLine("{bad json")).toEqual([]);
+    expect(provider.parseStreamLine("{bad json")).toEqual([
+      { type: "text", text: "{bad json\n" },
+    ]);
   });
 
   it("bakes model into each provider instance independently", () => {

@@ -687,6 +687,53 @@ describe("InitService scaffold", () => {
     expect(dockerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
   });
 
+  it("scaffolds opencode Dockerfile with a validated native binary symlink", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: opencodeAgent,
+      model: opencodeAgent.defaultModel,
+    });
+
+    const dockerfile = await readFile(
+      join(dir, ".sandcastle", "Dockerfile"),
+      "utf-8",
+    );
+    expect(dockerfile).toContain("npm install -g opencode-ai@latest");
+    expect(dockerfile).toContain(
+      'ENV OPENCODE_BIN_PATH="/usr/local/bin/opencode-native"',
+    );
+    expect(dockerfile).toContain(
+      'ln -sf "$OPENCODE_NATIVE_BIN" /usr/local/bin/opencode-native',
+    );
+    expect(dockerfile).toContain("/usr/local/bin/opencode-native --version");
+    expect(dockerfile).toContain(
+      'find "$(npm root -g)/opencode-ai/node_modules"',
+    );
+    expect(dockerfile).not.toContain("linux-x64-baseline");
+  });
+
+  it("scaffolds opencode Containerfile with native binary setup for podman", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: opencodeAgent,
+      model: opencodeAgent.defaultModel,
+      sandboxProvider: getSandboxProvider("podman")!,
+    });
+
+    const containerfile = await readFile(
+      join(dir, ".sandcastle", "Containerfile"),
+      "utf-8",
+    );
+    expect(containerfile).toContain(
+      'ENV OPENCODE_BIN_PATH="/usr/local/bin/opencode-native"',
+    );
+    expect(containerfile).toContain(
+      'ln -sf "$OPENCODE_NATIVE_BIN" /usr/local/bin/opencode-native',
+    );
+    expect(containerfile).toContain("/usr/local/bin/opencode-native --version");
+    expect(containerfile).not.toContain("linux-x64-baseline");
+  });
+
   it("scaffolds main.mts with codex factory import when codex agent selected", async () => {
     const dir = await makeDir();
     await runScaffold(dir, { agent: codexAgent, model: "gpt-5.4-mini" });

@@ -6,6 +6,7 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Effect } from "effect";
 import { describe, expect, it } from "vitest";
+import type { IsolatedSandboxHandle } from "./SandboxProvider.js";
 import { testIsolated } from "./sandboxes/test-isolated.js";
 import { syncIn } from "./syncIn.js";
 import { syncOut } from "./syncOut.js";
@@ -34,6 +35,41 @@ const getLog = async (dir: string) => {
   return stdout.trim().split("\n");
 };
 
+const execSandboxOk = async (
+  handle: IsolatedSandboxHandle,
+  command: string,
+  options?: { cwd?: string },
+) => {
+  const result = await handle.exec(command, options);
+  expect(result.exitCode, result.stderr).toBe(0);
+  return result;
+};
+
+const configureSandboxGit = async (handle: IsolatedSandboxHandle) => {
+  const wp = handle.worktreePath;
+  await execSandboxOk(handle, 'git config user.email "test@test.com"', {
+    cwd: wp,
+  });
+  await execSandboxOk(handle, 'git config user.name "Test"', { cwd: wp });
+};
+
+const syncInConfigured = async (
+  hostDir: string,
+  handle: IsolatedSandboxHandle,
+) => {
+  await Effect.runPromise(syncIn(hostDir, handle));
+  await configureSandboxGit(handle);
+};
+
+const commitSandbox = async (
+  handle: IsolatedSandboxHandle,
+  message: string,
+) => {
+  await execSandboxOk(handle, `git commit -m "${message}"`, {
+    cwd: handle.worktreePath,
+  });
+};
+
 describe("syncOut", () => {
   it("extracts a single commit from sandbox back to host", async () => {
     const hostDir = await mkdtemp(join(tmpdir(), "host-"));
@@ -43,13 +79,13 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       // Make a commit inside the sandbox
       const wp = handle.worktreePath;
       await handle.exec('echo "new file" > new.txt', { cwd: wp });
-      await handle.exec("git add new.txt", { cwd: wp });
-      await handle.exec('git commit -m "add new file"', { cwd: wp });
+      await execSandboxOk(handle, "git add new.txt", { cwd: wp });
+      await commitSandbox(handle, "add new file");
 
       await Effect.runPromise(syncOut(hostDir, handle));
 
@@ -74,20 +110,20 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       await handle.exec('echo "a" > a.txt', { cwd: wp });
-      await handle.exec("git add a.txt", { cwd: wp });
-      await handle.exec('git commit -m "add a"', { cwd: wp });
+      await execSandboxOk(handle, "git add a.txt", { cwd: wp });
+      await commitSandbox(handle, "add a");
 
       await handle.exec('echo "b" > b.txt', { cwd: wp });
-      await handle.exec("git add b.txt", { cwd: wp });
-      await handle.exec('git commit -m "add b"', { cwd: wp });
+      await execSandboxOk(handle, "git add b.txt", { cwd: wp });
+      await commitSandbox(handle, "add b");
 
       await handle.exec('echo "c" > c.txt', { cwd: wp });
-      await handle.exec("git add c.txt", { cwd: wp });
-      await handle.exec('git commit -m "add c"', { cwd: wp });
+      await execSandboxOk(handle, "git add c.txt", { cwd: wp });
+      await commitSandbox(handle, "add c");
 
       await Effect.runPromise(syncOut(hostDir, handle));
 
@@ -96,6 +132,36 @@ describe("syncOut", () => {
       expect(log[0]).toContain("add c");
       expect(log[1]).toContain("add b");
       expect(log[2]).toContain("add a");
+    } finally {
+      await handle.close();
+    }
+  });
+
+  it("uses the sandbox baseline across sequential sync-outs", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "host-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "initial.txt", "initial", "initial commit");
+
+    const provider = testIsolated();
+    const handle = await provider.create({ env: {} });
+    try {
+      await syncInConfigured(hostDir, handle);
+
+      const wp = handle.worktreePath;
+      await handle.exec('echo "one" > one.txt', { cwd: wp });
+      await execSandboxOk(handle, "git add one.txt", { cwd: wp });
+      await commitSandbox(handle, "add one");
+      await Effect.runPromise(syncOut(hostDir, handle));
+
+      await handle.exec('echo "two" > two.txt', { cwd: wp });
+      await execSandboxOk(handle, "git add two.txt", { cwd: wp });
+      await commitSandbox(handle, "add two");
+      await Effect.runPromise(syncOut(hostDir, handle));
+
+      const log = await getLog(hostDir);
+      expect(log).toHaveLength(3);
+      expect(log[0]).toContain("add two");
+      expect(log[1]).toContain("add one");
     } finally {
       await handle.close();
     }
@@ -113,7 +179,7 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       // No commits made — syncOut should be a no-op
       await Effect.runPromise(syncOut(hostDir, handle));
@@ -135,25 +201,29 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
 
       // Create a branch, commit on it, switch back, commit on main, then merge
-      await handle.exec("git checkout -b feature", { cwd: wp });
+      await execSandboxOk(handle, "git checkout -b feature", { cwd: wp });
       await handle.exec('echo "feature" > feature.txt', { cwd: wp });
-      await handle.exec("git add feature.txt", { cwd: wp });
-      await handle.exec('git commit -m "feature commit"', { cwd: wp });
+      await execSandboxOk(handle, "git add feature.txt", { cwd: wp });
+      await commitSandbox(handle, "feature commit");
 
-      await handle.exec("git checkout main", { cwd: wp });
+      await execSandboxOk(handle, "git checkout main", { cwd: wp });
       await handle.exec('echo "main-work" > main-work.txt', { cwd: wp });
-      await handle.exec("git add main-work.txt", { cwd: wp });
-      await handle.exec('git commit -m "main commit"', { cwd: wp });
+      await execSandboxOk(handle, "git add main-work.txt", { cwd: wp });
+      await commitSandbox(handle, "main commit");
 
       // Merge (creates a merge commit)
-      await handle.exec("git merge feature --no-ff -m 'merge feature'", {
-        cwd: wp,
-      });
+      await execSandboxOk(
+        handle,
+        "git merge feature --no-ff -m 'merge feature'",
+        {
+          cwd: wp,
+        },
+      );
 
       // syncOut should handle the merge commit's empty patch
       await Effect.runPromise(syncOut(hostDir, handle));
@@ -176,14 +246,14 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       // Modify tracked file (unstaged change)
       await handle.exec('echo "modified content" > initial.txt', { cwd: wp });
       // Create and stage a new file
       await handle.exec('echo "staged file" > staged.txt', { cwd: wp });
-      await handle.exec("git add staged.txt", { cwd: wp });
+      await execSandboxOk(handle, "git add staged.txt", { cwd: wp });
 
       await Effect.runPromise(syncOut(hostDir, handle));
 
@@ -212,7 +282,7 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       // Create untracked files (not git-added)
@@ -246,14 +316,14 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
 
       // 1. Make a commit
       await handle.exec('echo "committed" > committed.txt', { cwd: wp });
-      await handle.exec("git add committed.txt", { cwd: wp });
-      await handle.exec('git commit -m "add committed file"', { cwd: wp });
+      await execSandboxOk(handle, "git add committed.txt", { cwd: wp });
+      await commitSandbox(handle, "add committed file");
 
       // 2. Leave uncommitted changes
       await handle.exec('echo "modified" > initial.txt', { cwd: wp });
@@ -290,12 +360,12 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       await handle.exec('echo "new" > new.txt', { cwd: wp });
-      await handle.exec("git add new.txt", { cwd: wp });
-      await handle.exec('git commit -m "add new"', { cwd: wp });
+      await execSandboxOk(handle, "git add new.txt", { cwd: wp });
+      await commitSandbox(handle, "add new");
 
       // Simulate a stale git am session on the host by creating rebase-apply dir
       await execAsync("mkdir -p .git/rebase-apply", { cwd: hostDir });
@@ -320,12 +390,12 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       await handle.exec('echo "new file" > new.txt', { cwd: wp });
-      await handle.exec("git add new.txt", { cwd: wp });
-      await handle.exec('git commit -m "add new file"', { cwd: wp });
+      await execSandboxOk(handle, "git add new.txt", { cwd: wp });
+      await commitSandbox(handle, "add new file");
 
       // Also add uncommitted + untracked changes
       await handle.exec('echo "modified" > initial.txt', { cwd: wp });
@@ -354,13 +424,13 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       // Create a commit in the sandbox that modifies initial.txt
       await handle.exec('echo "sandbox change" > initial.txt', { cwd: wp });
-      await handle.exec("git add initial.txt", { cwd: wp });
-      await handle.exec('git commit -m "sandbox edit"', { cwd: wp });
+      await execSandboxOk(handle, "git add initial.txt", { cwd: wp });
+      await commitSandbox(handle, "sandbox edit");
 
       // Create dirty working tree on host that conflicts with the patch
       // (git am refuses to apply when working tree has conflicting changes)
@@ -409,7 +479,7 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
       // Make uncommitted changes in sandbox
@@ -460,16 +530,16 @@ describe("syncOut", () => {
     const provider = testIsolated();
     const handle = await provider.create({ env: {} });
     try {
-      await Effect.runPromise(syncIn(hostDir, handle));
+      await syncInConfigured(hostDir, handle);
 
       const wp = handle.worktreePath;
-      await handle.exec('git config user.email "agent@sandbox.com"', {
+      await execSandboxOk(handle, 'git config user.email "agent@sandbox.com"', {
         cwd: wp,
       });
-      await handle.exec('git config user.name "Agent"', { cwd: wp });
+      await execSandboxOk(handle, 'git config user.name "Agent"', { cwd: wp });
       await handle.exec('echo "authored" > authored.txt', { cwd: wp });
-      await handle.exec("git add authored.txt", { cwd: wp });
-      await handle.exec('git commit -m "commit from agent"', { cwd: wp });
+      await execSandboxOk(handle, "git add authored.txt", { cwd: wp });
+      await commitSandbox(handle, "commit from agent");
 
       await Effect.runPromise(syncOut(hostDir, handle));
 

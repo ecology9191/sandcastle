@@ -12,6 +12,7 @@ import { join } from "node:path";
 import { Effect } from "effect";
 import type { IsolatedSandboxHandle } from "./SandboxProvider.js";
 import { SyncError } from "./errors.js";
+import { setSyncOutBaseline } from "./syncOut.js";
 
 /**
  * Execute a command on the host side, returning stdout.
@@ -162,6 +163,8 @@ export const syncIn = (
             }),
           );
         }
+
+        setSyncOutBaseline(handle, sandboxHead);
       }),
       // Clean up host-side bundle temp dir (runs regardless of success/failure)
       Effect.promise(() => rm(bundleDir, { recursive: true, force: true })),

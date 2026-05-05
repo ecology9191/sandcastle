@@ -21,7 +21,11 @@ const TOOL_ARG_FIELDS: Record<string, string> = {
 const extractErrorMessage = (obj: any): string | undefined => {
   const err = obj.error;
   if (typeof err === "string") return err;
-  if (typeof err === "object" && err !== null && typeof err.message === "string") {
+  if (
+    typeof err === "object" &&
+    err !== null &&
+    typeof err.message === "string"
+  ) {
     return err.message;
   }
   if (typeof obj.message === "string") return obj.message;
@@ -328,8 +332,9 @@ export const opencode = (
     return args;
   },
 
-  parseStreamLine(_line: string): ParsedStreamEvent[] {
-    return [];
+  parseStreamLine(line: string): ParsedStreamEvent[] {
+    if (line.length === 0) return [];
+    return [{ type: "text", text: `${line}\n` }];
   },
 });
 
