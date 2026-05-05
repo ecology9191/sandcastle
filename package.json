@@ -59,7 +59,7 @@
   "packageManager": "npm@10.9.2",
   "repository": {
     "type": "git",
-    "url": "https://github.com/ecology9191/sandcastle"
+    "url": "git+https://github.com/ecology9191/sandcastle.git"
   },
   "license": "MIT",
   "devDependencies": {
