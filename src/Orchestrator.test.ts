@@ -2809,6 +2809,376 @@ describe("Orchestrator Display integration", () => {
 });
 
 // ---------------------------------------------------------------------------
+// OpenCode provider integration tests
+// ---------------------------------------------------------------------------
+
+const opencodeJsonLine = (event: unknown): string => JSON.stringify(event);
+
+const makeMockOpenCodeAgentLayer = (
+  sandboxDir: string,
+  streamLines: readonly string[],
+  options?: { readonly stderr?: string; readonly exitCode?: number },
+): Layer.Layer<Sandbox> => {
+  const fsLayer = makeLocalSandboxLayer(sandboxDir);
+
+  return Layer.succeed(Sandbox, {
+    exec: (command, execOptions) => {
+      if (command.startsWith("opencode ")) {
+        return Effect.sync(() => {
+          if (execOptions?.onLine) {
+            for (const line of streamLines) {
+              execOptions.onLine(line);
+            }
+          }
+          return {
+            stdout: streamLines.join("\n"),
+            stderr: options?.stderr ?? "",
+            exitCode: options?.exitCode ?? 0,
+          };
+        });
+      }
+      return Effect.flatMap(Sandbox, (real) =>
+        real.exec(command, execOptions),
+      ).pipe(Effect.provide(fsLayer));
+    },
+    copyIn: (hostPath, sandboxPath) =>
+      Effect.flatMap(Sandbox, (real) =>
+        real.copyIn(hostPath, sandboxPath),
+      ).pipe(Effect.provide(fsLayer)),
+    copyFileOut: (sandboxPath, hostPath) =>
+      Effect.flatMap(Sandbox, (real) =>
+        real.copyFileOut(sandboxPath, hostPath),
+      ).pipe(Effect.provide(fsLayer)),
+  });
+};
+
+const runOpenCodeOrchestrate = async ({
+  streamLines,
+  stderr,
+  exitCode,
+  completionSignal,
+}: {
+  readonly streamLines: readonly string[];
+  readonly stderr?: string;
+  readonly exitCode?: number;
+  readonly completionSignal?: string | string[];
+}) => {
+  const hostDir = await mkdtemp(join(tmpdir(), "orch-opencode-host-"));
+  await initRepo(hostDir);
+  await commitFile(hostDir, "hello.txt", "hello", "initial commit");
+
+  const provider = opencodeFactory("test-model");
+  const { factoryLayer } = makeTestSandboxFactory(hostDir, (dir) =>
+    makeMockOpenCodeAgentLayer(dir, streamLines, { stderr, exitCode }),
+  );
+
+  return Effect.runPromiseExit(
+    orchestrate({
+      provider,
+      hostRepoDir: hostDir,
+      iterations: 1,
+      prompt: "do some work",
+      completionSignal,
+    }).pipe(Effect.provide(Layer.merge(factoryLayer, testDisplayLayer))),
+  );
+};
+
+describe("Orchestrator with opencode provider", () => {
+  it("uses final assistant text for stdout and completionSignal, not raw JSONL", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "reasoning",
+        part: { text: "thinking contains RAW_SIGNAL" },
+      }),
+      opencodeJsonLine({
+        type: "log",
+        message: "log contains RAW_SIGNAL",
+      }),
+      opencodeJsonLine({
+        type: "tool_use",
+        part: {
+          tool: "bash",
+          input: { command: "printf ok" },
+          state: { output: "tool output contains RAW_SIGNAL" },
+        },
+      }),
+      opencodeJsonLine({
+        type: "step_start",
+      }),
+      opencodeJsonLine({
+        type: "text",
+        part: { text: "Final answer. FINAL_SIGNAL" },
+      }),
+      opencodeJsonLine({
+        type: "step_finish",
+        part: { reason: "stop" },
+      }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({
+      streamLines,
+      completionSignal: ["RAW_SIGNAL", "FINAL_SIGNAL"],
+    });
+
+    expect(exit._tag).toBe("Success");
+    if (exit._tag === "Success") {
+      expect(exit.value.stdout).toBe("Final answer. FINAL_SIGNAL");
+      expect(exit.value.completionSignal).toBe("FINAL_SIGNAL");
+      expect(exit.value.stdout).not.toContain("RAW_SIGNAL");
+      expect(exit.value.stdout).not.toContain("thinking");
+      expect(exit.value.stdout).not.toContain("tool output");
+    }
+  });
+
+  it("does not fall back to raw JSONL for an explicit empty structured result", async () => {
+    const streamLines = [
+      opencodeJsonLine({ type: "step_start" }),
+      opencodeJsonLine({ type: "step_finish", part: { reason: "stop" } }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({ streamLines });
+
+    expect(exit._tag).toBe("Success");
+    if (exit._tag === "Success") {
+      expect(exit.value.stdout).toBe("");
+      expect(exit.value.completionSignal).toBeUndefined();
+    }
+  });
+
+  it("fails closed on successful opencode raw stdout without a structured result", async () => {
+    const exit = await runOpenCodeOrchestrate({
+      streamLines: ["plain non-json stdout with RAW_SIGNAL"],
+      completionSignal: "RAW_SIGNAL",
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain(
+          "opencode emitted non-JSON output after structured JSON was requested",
+        );
+        expect(err.message).not.toContain("RAW_SIGNAL");
+      }
+    }
+  });
+
+  it("fails closed when a successful structured stream contains malformed output", async () => {
+    const exit = await runOpenCodeOrchestrate({
+      streamLines: [
+        opencodeJsonLine({ type: "text", part: { text: "final answer" } }),
+        "{bad json",
+      ],
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain(
+          "opencode emitted malformed JSON after structured JSON was requested",
+        );
+        expect(err.message).not.toContain("final answer");
+      }
+    }
+  });
+
+  it("fails closed when successful opencode emits JSON without a string type", async () => {
+    const exit = await runOpenCodeOrchestrate({
+      streamLines: [opencodeJsonLine({ message: "missing type" })],
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain(
+          "opencode emitted JSON output without a string type after structured JSON was requested",
+        );
+        expect(err.message).not.toContain("missing type");
+      }
+    }
+  });
+
+  it("returns parsed error events from successful opencode output", async () => {
+    const exit = await runOpenCodeOrchestrate({
+      streamLines: [
+        opencodeJsonLine({
+          type: "error",
+          error: { data: { message: "parsed opencode error" } },
+        }),
+      ],
+    });
+
+    expect(exit._tag).toBe("Success");
+    if (exit._tag === "Success") {
+      expect(exit.value.stdout).toBe("parsed opencode error");
+      expect(exit.value.completionSignal).toBeUndefined();
+    }
+  });
+
+  it("does not expose raw JSONL on structured opencode failure without parsed error", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "text",
+        part: { text: "assistant text with RAW_JSON_DETAIL" },
+      }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({
+      streamLines,
+      exitCode: 1,
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain("opencode exited with code 1:");
+        expect(err.message).toContain(
+          "opencode emitted structured output but no error details were parsed",
+        );
+        expect(err.message).not.toContain("RAW_JSON_DETAIL");
+        expect(err.message).not.toContain('"type":"text"');
+      }
+    }
+  });
+
+  it("keeps raw stdout tail fallback for non-structured opencode failures", async () => {
+    const exit = await runOpenCodeOrchestrate({
+      streamLines: ["plain non-json failure detail"],
+      exitCode: 1,
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain("plain non-json failure detail");
+      }
+    }
+  });
+
+  it("prefers stderr on structured opencode failure when stderr is present", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "text",
+        part: { text: "assistant text with RAW_JSON_DETAIL" },
+      }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({
+      streamLines,
+      stderr: "fatal error from stderr",
+      exitCode: 1,
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain("fatal error from stderr");
+        expect(err.message).not.toContain("RAW_JSON_DETAIL");
+      }
+    }
+  });
+
+  it("prefers parsed opencode errors on structured failure when stderr is empty", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "error",
+        error: { data: { message: "parsed opencode error" } },
+      }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({
+      streamLines,
+      exitCode: 1,
+    });
+
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain("parsed opencode error");
+        expect(err.message).not.toContain('"type":"error"');
+      }
+    }
+  });
+
+  it("does not populate sessionId from OpenCode session fields while captureSessions is false", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "session",
+        sessionID: "opencode-uppercase-session",
+      }),
+      opencodeJsonLine({
+        type: "system",
+        subtype: "init",
+        session_id: "opencode-snake-session",
+      }),
+      opencodeJsonLine({
+        type: "text",
+        part: { text: "done" },
+      }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({ streamLines });
+
+    expect(exit._tag).toBe("Success");
+    if (exit._tag === "Success") {
+      expect(exit.value.iterations[0]!.sessionId).toBeUndefined();
+      expect(exit.value.iterations[0]!.sessionFilePath).toBeUndefined();
+      expect(exit.value.stdout).toBe("done");
+    }
+  });
+
+  it("returns assistant text on clean opencode exit without step_finish", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "text",
+        part: { text: "assistant answer without final step" },
+      }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({ streamLines });
+
+    expect(exit._tag).toBe("Success");
+    if (exit._tag === "Success") {
+      expect(exit.value.stdout).toBe("assistant answer without final step");
+    }
+  });
+
+  it("does not reuse earlier assistant-step tags after a later empty unfinished step", async () => {
+    const streamLines = [
+      opencodeJsonLine({
+        type: "text",
+        part: { text: "draft answer with EARLIER_SIGNAL" },
+      }),
+      opencodeJsonLine({ type: "step_start" }),
+    ];
+
+    const exit = await runOpenCodeOrchestrate({
+      streamLines,
+      completionSignal: "EARLIER_SIGNAL",
+    });
+
+    expect(exit._tag).toBe("Success");
+    if (exit._tag === "Success") {
+      expect(exit.value.stdout).toBe("");
+      expect(exit.value.completionSignal).toBeUndefined();
+    }
+  });
+});
+
+// ---------------------------------------------------------------------------
 // Pi provider integration tests
 // ---------------------------------------------------------------------------
 

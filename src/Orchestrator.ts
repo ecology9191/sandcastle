@@ -11,7 +11,12 @@ import type { SandboxError } from "./errors.js";
 import type { SandboxService } from "./SandboxFactory.js";
 import { SandboxFactory, SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 import { withSandboxLifecycle, type SandboxHooks } from "./SandboxLifecycle.js";
-import type { AgentProvider, IterationUsage } from "./AgentProvider.js";
+import type {
+  AgentProvider,
+  AgentStreamParser,
+  IterationUsage,
+  ParsedStreamEvent,
+} from "./AgentProvider.js";
 import { TextDeltaBuffer } from "./TextDeltaBuffer.js";
 import {
   hostSessionStore,
@@ -23,6 +28,51 @@ import { SessionPaths } from "./SessionPaths.js";
 export type { ParsedStreamEvent, IterationUsage } from "./AgentProvider.js";
 
 const IDLE_WARNING_INTERVAL_MS = 60_000;
+
+const hasStructuredOpenCodeOutput = (stdout: string): boolean =>
+  stdout.split("\n").some((line) => {
+    const trimmed = line.trim();
+    if (!trimmed.startsWith("{")) return false;
+    try {
+      const parsed = JSON.parse(trimmed) as unknown;
+      return (
+        typeof parsed === "object" &&
+        parsed !== null &&
+        typeof (parsed as { type?: unknown }).type === "string"
+      );
+    } catch {
+      return false;
+    }
+  });
+
+const getOpenCodeStructuredOutputFailure = (
+  stdout: string,
+): string | undefined => {
+  for (const line of stdout.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (!trimmed.startsWith("{")) {
+      return "opencode emitted non-JSON output after structured JSON was requested";
+    }
+
+    let parsed: unknown;
+    try {
+      parsed = JSON.parse(trimmed);
+    } catch {
+      return "opencode emitted malformed JSON after structured JSON was requested";
+    }
+
+    if (
+      typeof parsed !== "object" ||
+      parsed === null ||
+      typeof (parsed as { type?: unknown }).type !== "string"
+    ) {
+      return "opencode emitted JSON output without a string type after structured JSON was requested";
+    }
+  }
+
+  return undefined;
+};
 
 const invokeAgent = (
   sandbox: SandboxService,
@@ -38,7 +88,10 @@ const invokeAgent = (
   signal?: AbortSignal,
 ): Effect.Effect<{ result: string; sessionId?: string }, SandboxError> =>
   Effect.gen(function* () {
-    let resultText = "";
+    const streamParser: AgentStreamParser =
+      provider.createStreamParser?.() ?? provider;
+    let resultText: string | undefined;
+    let sawResultEvent = false;
     let sessionId: string | undefined;
 
     // Deferred that will be failed when the idle timer fires
@@ -100,35 +153,65 @@ const invokeAgent = (
         dangerouslySkipPermissions: true,
         resumeSession,
       });
+
+      const dispatchParsedEvent = (parsed: ParsedStreamEvent) => {
+        switch (parsed.type) {
+          case "text":
+            onText(parsed.text);
+            return;
+          case "result":
+            resultText = parsed.result;
+            sawResultEvent = true;
+            return;
+          case "tool_call":
+            onToolCall(parsed.name, parsed.args);
+            return;
+          case "session_id":
+            sessionId = parsed.sessionId;
+            return;
+          default: {
+            const _exhaustive: never = parsed;
+            return _exhaustive;
+          }
+        }
+      };
+
       const execResult = yield* sandbox.exec(printCmd.command, {
         onLine: (line) => {
           resetIdleTimer();
-          for (const parsed of provider.parseStreamLine(line)) {
-            if (parsed.type === "text") {
-              onText(parsed.text);
-            } else if (parsed.type === "result") {
-              resultText = parsed.result;
-            } else if (parsed.type === "tool_call") {
-              onToolCall(parsed.name, parsed.args);
-            } else if (parsed.type === "session_id") {
-              sessionId = parsed.sessionId;
-            }
+          for (const parsed of streamParser.parseStreamLine(line)) {
+            dispatchParsedEvent(parsed);
           }
         },
         cwd: sandboxRepoDir,
         stdin: printCmd.stdin,
       });
 
+      for (const parsed of streamParser.finish?.({
+        exitCode: execResult.exitCode,
+      }) ?? []) {
+        dispatchParsedEvent(parsed);
+      }
+
       if (execResult.exitCode !== 0) {
         // Prefer stderr; fall back to resultText (from parsed stream events),
-        // then to the tail of raw stdout (last 20 non-empty lines).
+        // then to the tail of raw stdout (last 20 non-empty lines) for
+        // non-structured output.
+        const hasStructuredOutput =
+          provider.name === "opencode" &&
+          hasStructuredOpenCodeOutput(execResult.stdout);
         let errorDetail = execResult.stderr;
         if (!errorDetail.trim()) {
-          errorDetail = resultText;
+          errorDetail = resultText ?? "";
         }
         if (!errorDetail.trim()) {
-          const lines = execResult.stdout.split("\n").filter((l) => l.trim());
-          errorDetail = lines.slice(-20).join("\n");
+          if (hasStructuredOutput) {
+            errorDetail =
+              "opencode emitted structured output but no error details were parsed";
+          } else {
+            const lines = execResult.stdout.split("\n").filter((l) => l.trim());
+            errorDetail = lines.slice(-20).join("\n");
+          }
         }
         return yield* Effect.fail(
           new AgentError({
@@ -137,9 +220,20 @@ const invokeAgent = (
         );
       }
 
+      if (provider.name === "opencode") {
+        const structuredOutputFailure = getOpenCodeStructuredOutputFailure(
+          execResult.stdout,
+        );
+        if (structuredOutputFailure !== undefined) {
+          return yield* Effect.fail(
+            new AgentError({ message: structuredOutputFailure }),
+          );
+        }
+      }
+
       if (
         provider.name === "opencode" &&
-        !resultText.trim() &&
+        !(resultText ?? "").trim() &&
         !execResult.stdout.trim() &&
         !execResult.stderr.trim()
       ) {
@@ -148,7 +242,23 @@ const invokeAgent = (
         );
       }
 
-      return { result: resultText || execResult.stdout, sessionId };
+      if (
+        provider.name === "opencode" &&
+        !sawResultEvent &&
+        execResult.stdout.trim()
+      ) {
+        return yield* Effect.fail(
+          new AgentError({
+            message:
+              "opencode emitted unparseable output after structured JSON was requested",
+          }),
+        );
+      }
+
+      return {
+        result: sawResultEvent ? (resultText ?? "") : execResult.stdout,
+        sessionId,
+      };
     }).pipe(
       Effect.ensuring(
         Effect.sync(() => {

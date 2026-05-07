@@ -6,6 +6,17 @@ export type ParsedStreamEvent =
 
 const shellEscape = (s: string): string => "'" + s.replace(/'/g, "'\\''") + "'";
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null;
+
+const stringField = (
+  obj: Record<string, unknown> | undefined,
+  field: string,
+): string | undefined => {
+  const value = obj?.[field];
+  return typeof value === "string" ? value : undefined;
+};
+
 /** Maps allowlisted tool names to the input field containing the display arg */
 const TOOL_ARG_FIELDS: Record<string, string> = {
   Bash: "command",
@@ -16,19 +27,25 @@ const TOOL_ARG_FIELDS: Record<string, string> = {
 
 /**
  * Extract an error message from a parsed JSON error event.
- * Handles { error: "string" }, { error: { message: "string" } }, and { message: "string" }.
+ * Handles { error: "string" }, { error: { message: "string" } },
+ * { error: { data: { message: "string" } } }, and { message: "string" }.
  */
-const extractErrorMessage = (obj: any): string | undefined => {
+const extractErrorMessage = (obj: unknown): string | undefined => {
+  if (!isRecord(obj)) return undefined;
   const err = obj.error;
   if (typeof err === "string") return err;
-  if (
-    typeof err === "object" &&
-    err !== null &&
-    typeof err.message === "string"
-  ) {
+  if (isRecord(err) && typeof err.message === "string") {
     return err.message;
   }
+  if (isRecord(err) && isRecord(err.data)) {
+    const dataMessage = stringField(err.data, "message");
+    if (dataMessage !== undefined) return dataMessage;
+  }
   if (typeof obj.message === "string") return obj.message;
+  if (isRecord(obj.data)) {
+    const dataMessage = stringField(obj.data, "message");
+    if (dataMessage !== undefined) return dataMessage;
+  }
   return undefined;
 };
 
@@ -112,6 +129,11 @@ export interface IterationUsage {
   readonly outputTokens: number;
 }
 
+export interface AgentStreamParser {
+  parseStreamLine(line: string): ParsedStreamEvent[];
+  finish?(options: { exitCode: number }): ParsedStreamEvent[];
+}
+
 export interface AgentProvider {
   readonly name: string;
   /** Environment variables injected by this agent provider. Merged at launch time with env resolver and sandbox provider env. */
@@ -121,6 +143,7 @@ export interface AgentProvider {
   buildPrintCommand(options: AgentCommandOptions): PrintCommand;
   buildInteractiveArgs?(options: AgentCommandOptions): string[];
   parseStreamLine(line: string): ParsedStreamEvent[];
+  createStreamParser?(): AgentStreamParser;
   /** Parse token usage from the captured session JSONL content. Only implemented by Claude Code. */
   parseSessionUsage?(content: string): IterationUsage | undefined;
 }
@@ -306,10 +329,149 @@ export const codex = (
 // OpenCode agent provider
 // ---------------------------------------------------------------------------
 
+const OPENCODE_TOOL_DISPLAY: Record<
+  string,
+  { readonly name: string; readonly inputFields: readonly string[] }
+> = {
+  bash: { name: "Bash", inputFields: ["command"] },
+  websearch: { name: "WebSearch", inputFields: ["query"] },
+  webfetch: { name: "WebFetch", inputFields: ["url"] },
+  task: { name: "Agent", inputFields: ["description", "prompt"] },
+};
+
+const getOpenCodeToolArgs = (
+  part: Record<string, unknown>,
+  inputFields: readonly string[],
+): string | undefined => {
+  const input = isRecord(part.input) ? part.input : undefined;
+  const state = isRecord(part.state) ? part.state : undefined;
+  const stateInput = isRecord(state?.input) ? state.input : undefined;
+
+  for (const field of inputFields) {
+    const value = stringField(input, field) ?? stringField(stateInput, field);
+    if (value !== undefined) return value;
+  }
+
+  return stringField(state, "title");
+};
+
+const createOpenCodeStreamParser = (): AgentStreamParser => {
+  let currentAssistantStepText = "";
+  let lastNonEmptyAssistantStepText = "";
+  let assistantTextFallback = "";
+  let sawStructuredOpenCodeEvent = false;
+  let sawStepStart = false;
+  let resultEmitted = false;
+
+  const emitResult = (result: string): ParsedStreamEvent[] => {
+    resultEmitted = true;
+    return [{ type: "result", result }];
+  };
+
+  return {
+    parseStreamLine(line: string): ParsedStreamEvent[] {
+      const trimmed = line.trim();
+      if (!trimmed) return [];
+      if (!trimmed.startsWith("{")) return [];
+
+      let obj: unknown;
+      try {
+        obj = JSON.parse(trimmed);
+      } catch {
+        return [];
+      }
+      if (!isRecord(obj) || typeof obj.type !== "string") return [];
+
+      sawStructuredOpenCodeEvent = true;
+      const part = isRecord(obj.part) ? obj.part : undefined;
+
+      switch (obj.type) {
+        case "text": {
+          const text = stringField(part, "text");
+          if (text === undefined) return [];
+          currentAssistantStepText += text;
+          assistantTextFallback += text;
+          return [{ type: "text", text }];
+        }
+
+        case "reasoning": {
+          const text = stringField(part, "text");
+          return text === undefined
+            ? []
+            : [{ type: "text", text: `[thinking] ${text}` }];
+        }
+
+        case "tool_use": {
+          if (part === undefined) return [];
+          const toolName =
+            stringField(part, "tool") ?? stringField(part, "name");
+          if (toolName === undefined) return [];
+          const display = OPENCODE_TOOL_DISPLAY[toolName];
+          if (display === undefined) return [];
+          const args = getOpenCodeToolArgs(part, display.inputFields);
+          return args === undefined
+            ? []
+            : [{ type: "tool_call", name: display.name, args }];
+        }
+
+        case "step_start": {
+          if (currentAssistantStepText.length > 0) {
+            lastNonEmptyAssistantStepText = currentAssistantStepText;
+          }
+          currentAssistantStepText = "";
+          sawStepStart = true;
+          return [];
+        }
+
+        case "step_finish": {
+          const reason =
+            stringField(part, "reason") ?? stringField(obj, "reason");
+          if (reason === "stop") {
+            return emitResult(currentAssistantStepText);
+          }
+          if (reason === "tool-calls") {
+            if (currentAssistantStepText.length > 0) {
+              lastNonEmptyAssistantStepText = currentAssistantStepText;
+            }
+            currentAssistantStepText = "";
+            sawStepStart = true;
+            return [];
+          }
+          return [];
+        }
+
+        case "error": {
+          const message = extractErrorMessage(obj) ?? extractErrorMessage(part);
+          return message === undefined ? [] : emitResult(message);
+        }
+
+        default:
+          return [];
+      }
+    },
+
+    finish({ exitCode }: { exitCode: number }): ParsedStreamEvent[] {
+      if (resultEmitted || exitCode !== 0 || !sawStructuredOpenCodeEvent) {
+        return [];
+      }
+
+      const result = sawStepStart
+        ? currentAssistantStepText
+        : currentAssistantStepText ||
+          lastNonEmptyAssistantStepText ||
+          assistantTextFallback ||
+          "";
+      return emitResult(result);
+    },
+  };
+};
+
 /** Options for the opencode agent provider. */
 export interface OpenCodeOptions {
   /** Environment variables injected by this agent provider. */
   readonly env?: Record<string, string>;
+  /** Provider-specific OpenCode model variant/reasoning setting. */
+  readonly variant?: string;
 }
 
 export const opencode = (
@@ -320,9 +482,18 @@ export const opencode = (
   env: options?.env ?? {},
   captureSessions: false,
 
-  buildPrintCommand({ prompt }: AgentCommandOptions): PrintCommand {
+  buildPrintCommand({
+    prompt,
+    dangerouslySkipPermissions,
+  }: AgentCommandOptions): PrintCommand {
+    const permissionFlag = dangerouslySkipPermissions
+      ? " --dangerously-skip-permissions"
+      : "";
+    const variantFlag = options?.variant
+      ? ` --variant ${shellEscape(options.variant)}`
+      : "";
     return {
-      command: `opencode run --model ${shellEscape(model)} ${shellEscape(prompt)}`,
+      command: `opencode run --format json --thinking${permissionFlag} --model ${shellEscape(model)}${variantFlag} -- ${shellEscape(prompt)}`,
     };
   },
 
@@ -333,8 +504,11 @@ export const opencode = (
   },
 
   parseStreamLine(line: string): ParsedStreamEvent[] {
-    if (line.length === 0) return [];
-    return [{ type: "text", text: `${line}\n` }];
+    return createOpenCodeStreamParser().parseStreamLine(line);
+  },
+
+  createStreamParser(): AgentStreamParser {
+    return createOpenCodeStreamParser();
   },
 });
 

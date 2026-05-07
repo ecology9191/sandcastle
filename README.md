@@ -336,7 +336,7 @@ if (closeResult.preservedWorktreePath) {
 | ------------------ | ------------------- | ------------------------------------------------------------------ |
 | `iterations`       | `IterationResult[]` | Per-iteration results (use `.length` for the count)                |
 | `completionSignal` | string?             | The matched completion signal string, or `undefined` if none fired |
-| `stdout`           | string              | Combined agent output from all iterations                          |
+| `stdout`           | string              | Combined final assistant text from all iterations                  |
 | `commits`          | `{ sha }[]`         | Commits created during the run                                     |
 | `logFilePath`      | string?             | Path to the log file (only when logging to a file)                 |
 
@@ -458,7 +458,7 @@ await sandbox.close();
 | ------------------ | ------------------- | ------------------------------------------------------ |
 | `iterations`       | `IterationResult[]` | Per-iteration results (use `.length` for the count)    |
 | `completionSignal` | string              | The matched completion signal, or undefined            |
-| `stdout`           | string              | Combined stdout output from all agent iterations       |
+| `stdout`           | string              | Combined final assistant text from all iterations      |
 | `commits`          | { sha: string }[]   | List of commits made by the agent during the run       |
 | `branch`           | string              | The branch name the agent worked on                    |
 | `logFilePath`      | string              | Path to the log file, if logging was drained to a file |
@@ -691,7 +691,7 @@ Removes the Podman image.
 | ------------------ | ------------------- | ------------------------------------------------------------------ |
 | `iterations`       | `IterationResult[]` | Per-iteration results (use `.length` for the count)                |
 | `completionSignal` | string?             | The matched completion signal string, or `undefined` if none fired |
-| `stdout`           | string              | Agent output                                                       |
+| `stdout`           | string              | Final assistant text from all iterations                           |
 | `commits`          | `{ sha }[]`         | Commits created during the run                                     |
 | `branch`           | string              | Target branch name                                                 |
 | `logFilePath`      | string?             | Path to the log file (only when logging to a file)                 |

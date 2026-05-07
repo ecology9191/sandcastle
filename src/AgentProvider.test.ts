@@ -691,6 +691,27 @@ describe("codex factory", () => {
 // opencode factory
 // ---------------------------------------------------------------------------
 
+const opencodeJsonLine = (event: unknown): string => JSON.stringify(event);
+
+const createOpenCodeParser = () => {
+  const parser = opencode("opencode/big-pickle").createStreamParser?.();
+  if (parser === undefined) {
+    throw new Error("OpenCode provider did not expose a stream parser");
+  }
+  return parser;
+};
+
+const finishOpenCodeParser = (
+  parser: ReturnType<typeof createOpenCodeParser>,
+  exitCode = 0,
+) => {
+  const events = parser.finish?.({ exitCode });
+  if (events === undefined) {
+    throw new Error("OpenCode parser did not expose finish()");
+  }
+  return events;
+};
+
 describe("opencode factory", () => {
   it("returns a provider with name 'opencode'", () => {
     const provider = opencode("opencode/big-pickle");
@@ -703,20 +724,24 @@ describe("opencode factory", () => {
     expect(provider).not.toHaveProperty("dockerfileTemplate");
   });
 
-  it("buildPrintCommand includes the model and prompt in command (no stdin)", () => {
+  it("buildPrintCommand requests JSON output, thinking, model, and prompt", () => {
     const provider = opencode("opencode/big-pickle");
     const { command, stdin } = provider.buildPrintCommand(opts("do something"));
-    expect(command).toContain("opencode run");
-    expect(command).toContain("opencode/big-pickle");
-    expect(command).toContain("'do something'");
+    expect(command).toBe(
+      "opencode run --format json --thinking --dangerously-skip-permissions --model 'opencode/big-pickle' -- 'do something'",
+    );
     expect(stdin).toBeUndefined();
   });
 
-  it("buildPrintCommand does not include --format json", () => {
+  it("buildPrintCommand omits --dangerously-skip-permissions when false", () => {
     const provider = opencode("opencode/big-pickle");
-    const { command } = provider.buildPrintCommand(opts("do something"));
-    expect(command).not.toContain("--format json");
-    expect(command).not.toContain("--format");
+    const { command } = provider.buildPrintCommand({
+      prompt: "do something",
+      dangerouslySkipPermissions: false,
+    });
+    expect(command).toBe(
+      "opencode run --format json --thinking --model 'opencode/big-pickle' -- 'do something'",
+    );
   });
 
   it("buildPrintCommand shell-escapes the prompt", () => {
@@ -731,28 +756,381 @@ describe("opencode factory", () => {
     expect(command).toContain("--model 'opencode/big-pickle'");
   });
 
-  it("parseStreamLine surfaces raw stdout as text events", () => {
+  it("buildPrintCommand includes free-form variant when specified", () => {
+    const provider = opencode("opencode/big-pickle", {
+      variant: "provider/reasoning=max",
+    });
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("--variant 'provider/reasoning=max'");
+  });
+
+  it("buildPrintCommand omits variant when not specified", () => {
     const provider = opencode("opencode/big-pickle");
-    expect(provider.parseStreamLine("some output text")).toEqual([
-      { type: "text", text: "some output text\n" },
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).not.toContain("--variant");
+  });
+
+  it("buildPrintCommand shell-escapes free-form variant values", () => {
+    const provider = opencode("model's", {
+      variant: "provider/high's max",
+    });
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toContain("--model 'model'\\''s'");
+    expect(command).toContain("--variant 'provider/high'\\''s max'");
+  });
+
+  it("buildPrintCommand keeps -- before option-looking prompts", () => {
+    const provider = opencode("opencode/big-pickle");
+    const { command } = provider.buildPrintCommand(
+      opts("--share --attach=thing"),
+    );
+    expect(command).toContain("-- '--share --attach=thing'");
+  });
+
+  it("buildInteractiveArgs stays unchanged for the OpenCode TUI", () => {
+    const provider = opencode("opencode/big-pickle", {
+      variant: "provider/reasoning=max",
+    });
+    expect(provider.buildInteractiveArgs!(opts("do something"))).toEqual([
+      "opencode",
+      "--model",
+      "opencode/big-pickle",
+      "-p",
+      "do something",
     ]);
-    expect(provider.parseStreamLine("")).toEqual([]);
+  });
+
+  it("parseStreamLine delegates JSON text parsing without raw passthrough", () => {
+    const provider = opencode("opencode/big-pickle");
     expect(
-      provider.parseStreamLine(JSON.stringify({ type: "text", text: "hi" })),
-    ).toEqual([{ type: "text", text: '{"type":"text","text":"hi"}\n' }]);
+      provider.parseStreamLine(
+        opencodeJsonLine({ type: "text", part: { text: "hi" } }),
+      ),
+    ).toEqual([{ type: "text", text: "hi" }]);
+    expect(provider.parseStreamLine("not json")).toEqual([]);
+    expect(provider.parseStreamLine("{bad json")).toEqual([]);
+    expect(provider.parseStreamLine("")).toEqual([]);
   });
 
-  it("parseStreamLine passes through non-JSON lines", () => {
-    const provider = opencode("opencode/big-pickle");
-    expect(provider.parseStreamLine("not json")).toEqual([
-      { type: "text", text: "not json\n" },
+  it("createStreamParser streams text and returns final assistant text on finish", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({ type: "text", part: { text: "Hello" } }),
+      ),
+    ).toEqual([{ type: "text", text: "Hello" }]);
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({ type: "text", part: { text: " world" } }),
+      ),
+    ).toEqual([{ type: "text", text: " world" }]);
+    expect(finishOpenCodeParser(parser)).toEqual([
+      { type: "result", result: "Hello world" },
     ]);
   });
 
-  it("parseStreamLine passes through malformed JSON", () => {
+  it("createStreamParser streams reasoning as display-only thinking", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({ type: "reasoning", part: { text: "checking" } }),
+      ),
+    ).toEqual([{ type: "text", text: "[thinking] checking" }]);
+    expect(finishOpenCodeParser(parser)).toEqual([
+      { type: "result", result: "" },
+    ]);
+  });
+
+  it("createStreamParser maps allowlisted lowercase tool_use events", () => {
+    const cases = [
+      ["bash", "Bash", { command: "npm test" }, "npm test"],
+      [
+        "websearch",
+        "WebSearch",
+        { query: "sandcastle docs" },
+        "sandcastle docs",
+      ],
+      [
+        "webfetch",
+        "WebFetch",
+        { url: "https://example.com" },
+        "https://example.com",
+      ],
+      ["task", "Agent", { description: "delegate work" }, "delegate work"],
+    ] as const;
+
+    for (const [tool, name, input, args] of cases) {
+      const parser = createOpenCodeParser();
+      expect(
+        parser.parseStreamLine(
+          opencodeJsonLine({ type: "tool_use", part: { tool, input } }),
+        ),
+      ).toEqual([{ type: "tool_call", name, args }]);
+    }
+  });
+
+  it("createStreamParser falls back to state title without leaking output fields", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: {
+            tool: "bash",
+            state: {
+              title: "Run tests",
+              output: "<promise>COMPLETE</promise>",
+              metadata: { output: "<plan>leak</plan>" },
+            },
+          },
+        }),
+      ),
+    ).toEqual([{ type: "tool_call", name: "Bash", args: "Run tests" }]);
+  });
+
+  it("createStreamParser prefers known tool input fields over state title", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: {
+            tool: "bash",
+            input: { command: "npm test" },
+            state: { title: "fallback title", output: "do not show" },
+          },
+        }),
+      ),
+    ).toEqual([{ type: "tool_call", name: "Bash", args: "npm test" }]);
+  });
+
+  it("createStreamParser prefers part input over state input for tool summaries", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: {
+            tool: "bash",
+            input: { command: "fallback command" },
+            state: {
+              input: { command: "state command" },
+              title: "fallback title",
+            },
+          },
+        }),
+      ),
+    ).toEqual([{ type: "tool_call", name: "Bash", args: "fallback command" }]);
+  });
+
+  it("createStreamParser falls back to state input when part input is missing", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: {
+            tool: "bash",
+            state: {
+              input: { command: "state command" },
+              title: "fallback title",
+            },
+          },
+        }),
+      ),
+    ).toEqual([{ type: "tool_call", name: "Bash", args: "state command" }]);
+  });
+
+  it("createStreamParser preserves tool display args without truncation", () => {
+    const parser = createOpenCodeParser();
+    const longCommand = `npm\n${"test ".repeat(60)}`;
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: { tool: "bash", input: { command: longCommand } },
+        }),
+      ),
+    ).toEqual([{ type: "tool_call", name: "Bash", args: longCommand }]);
+  });
+
+  it("createStreamParser ignores uppercase, unknown, and output-only tools", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: { tool: "Bash", input: { command: "npm test" } },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: { tool: "read", input: { path: "src/index.ts" } },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "tool_use",
+          part: {
+            tool: "bash",
+            state: { output: "secret", metadata: { output: "secret" } },
+          },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("createStreamParser resets current assistant step and stops on final step_finish", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({ type: "text", part: { text: "draft" } }),
+      ),
+    ).toEqual([{ type: "text", text: "draft" }]);
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "step_finish",
+          part: { reason: "tool-calls" },
+        }),
+      ),
+    ).toEqual([]);
+    expect(
+      parser.parseStreamLine(opencodeJsonLine({ type: "step_start" })),
+    ).toEqual([]);
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({ type: "text", part: { text: "final" } }),
+      ),
+    ).toEqual([{ type: "text", text: "final" }]);
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({ type: "step_finish", part: { reason: "stop" } }),
+      ),
+    ).toEqual([{ type: "result", result: "final" }]);
+    expect(finishOpenCodeParser(parser)).toEqual([]);
+  });
+
+  it("createStreamParser does not use tool-call steps as clean-exit results", () => {
+    const parser = createOpenCodeParser();
+    parser.parseStreamLine(
+      opencodeJsonLine({ type: "text", part: { text: "draft" } }),
+    );
+    parser.parseStreamLine(
+      opencodeJsonLine({
+        type: "step_finish",
+        part: { reason: "tool-calls" },
+      }),
+    );
+    expect(finishOpenCodeParser(parser)).toEqual([
+      { type: "result", result: "" },
+    ]);
+  });
+
+  it("createStreamParser extracts nested error.data.message as a result", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "error",
+          error: { data: { message: "OpenCode failed" } },
+        }),
+      ),
+    ).toEqual([{ type: "result", result: "OpenCode failed" }]);
+  });
+
+  it("createStreamParser ignores malformed and non-JSON lines directly", () => {
+    const parser = createOpenCodeParser();
+    expect(parser.parseStreamLine("{bad json")).toEqual([]);
+    expect(parser.parseStreamLine("not json")).toEqual([]);
+    expect(parser.parseStreamLine("")).toEqual([]);
+    expect(
+      parser.parseStreamLine(opencodeJsonLine({ type: "unknown_event" })),
+    ).toEqual([]);
+  });
+
+  it("createStreamParser ignores unknown step_finish reasons", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(
+        opencodeJsonLine({
+          type: "step_finish",
+          part: { reason: "cancelled" },
+        }),
+      ),
+    ).toEqual([]);
+  });
+
+  it("createStreamParser emits an empty structured result for unknown JSON events", () => {
+    const parser = createOpenCodeParser();
+    expect(
+      parser.parseStreamLine(opencodeJsonLine({ type: "unknown_event" })),
+    ).toEqual([]);
+    expect(finishOpenCodeParser(parser)).toEqual([
+      { type: "result", result: "" },
+    ]);
+  });
+
+  it("createStreamParser does not emit a finish result for unstructured output", () => {
+    const parser = createOpenCodeParser();
+    parser.parseStreamLine("not json");
+    parser.parseStreamLine("{bad json");
+    parser.parseStreamLine("");
+    expect(finishOpenCodeParser(parser)).toEqual([]);
+  });
+
+  it("createStreamParser treats a later step_start as authoritative on finish", () => {
+    const parser = createOpenCodeParser();
+    parser.parseStreamLine(
+      opencodeJsonLine({ type: "text", part: { text: "old answer" } }),
+    );
+    parser.parseStreamLine(opencodeJsonLine({ type: "step_start" }));
+    expect(finishOpenCodeParser(parser)).toEqual([
+      { type: "result", result: "" },
+    ]);
+  });
+
+  it("createStreamParser emits at most one final result", () => {
+    const parser = createOpenCodeParser();
+    parser.parseStreamLine(
+      opencodeJsonLine({ type: "text", part: { text: "done" } }),
+    );
+    expect(finishOpenCodeParser(parser)).toEqual([
+      { type: "result", result: "done" },
+    ]);
+    expect(finishOpenCodeParser(parser)).toEqual([]);
+  });
+
+  it("createStreamParser does not synthesize clean-exit fallback on nonzero exit", () => {
+    const parser = createOpenCodeParser();
+    parser.parseStreamLine(
+      opencodeJsonLine({ type: "text", part: { text: "partial" } }),
+    );
+    expect(finishOpenCodeParser(parser, 1)).toEqual([]);
+  });
+
+  it("createStreamParser keeps parser state scoped to each invocation", () => {
     const provider = opencode("opencode/big-pickle");
-    expect(provider.parseStreamLine("{bad json")).toEqual([
-      { type: "text", text: "{bad json\n" },
+    const firstParser = provider.createStreamParser!();
+    const secondParser = provider.createStreamParser!();
+
+    firstParser.parseStreamLine(
+      opencodeJsonLine({ type: "text", part: { text: "first" } }),
+    );
+    secondParser.parseStreamLine(
+      opencodeJsonLine({ type: "text", part: { text: "second" } }),
+    );
+
+    expect(finishOpenCodeParser(firstParser)).toEqual([
+      { type: "result", result: "first" },
+    ]);
+    expect(finishOpenCodeParser(secondParser)).toEqual([
+      { type: "result", result: "second" },
     ]);
   });
 
