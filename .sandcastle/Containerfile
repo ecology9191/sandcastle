@@ -1,0 +1,46 @@
+FROM node:22-bookworm
+
+# Install system dependencies
+RUN apt-get update && apt-get install -y \
+  git \
+  curl \
+  jq \
+  && rm -rf /var/lib/apt/lists/*
+
+# Install system dependencies for Beads
+RUN apt-get update && apt-get install -y \
+  dpkg-dev \
+  libicu72 \
+  && rm -rf /var/lib/apt/lists/* \
+  && ARCH_DIR=$(dpkg-architecture -qDEB_HOST_MULTIARCH) \
+  && for lib in /usr/lib/$ARCH_DIR/libicu*.so.72; do \
+       ln -s "$lib" "${lib%.72}.74"; \
+     done
+
+RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/install.sh | bash
+
+RUN corepack enable
+
+# Rename the base image's "node" user (UID 1000) to "agent".
+# This keeps UID 1000 so that --userns=keep-id (Podman) and
+# --user 1000:1000 (Docker) map to the correct home directory owner.
+RUN usermod -d /home/agent -m -l agent node
+
+# Install OpenCode CLI (run as root before USER agent)
+RUN npm install -g opencode-ai@latest
+RUN OPENCODE_NATIVE_BIN="$(find "$(npm root -g)/opencode-ai/node_modules" -type f -path "*/opencode-*/bin/opencode" -print -quit)" \
+  && test -n "$OPENCODE_NATIVE_BIN" \
+  && ln -sf "$OPENCODE_NATIVE_BIN" /usr/local/bin/opencode-native
+RUN test -x /usr/local/bin/opencode-native \
+  && /usr/local/bin/opencode-native --version
+
+ENV OPENCODE_BIN_PATH="/usr/local/bin/opencode-native"
+
+USER agent
+
+WORKDIR /home/agent
+
+# In worktree sandbox mode, Sandcastle bind-mounts the git worktree at ${SANDBOX_REPO_DIR}
+# and overrides the working directory to ${SANDBOX_REPO_DIR} at container start.
+# Structure your Dockerfile so that ${SANDBOX_REPO_DIR} can serve as the project root.
+ENTRYPOINT ["sleep", "infinity"]

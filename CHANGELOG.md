@@ -1,5 +1,11 @@
 # @ecology91/sandcastle
 
+## 0.5.12
+
+### Patch Changes
+
+- Update Sandcastle's scaffolded agent workflow for Beads/OpenCode usage and clarify that parallel planner issue lists are already filtered to ready work.
+
 ## 0.5.11
 
 ### Patch Changes
