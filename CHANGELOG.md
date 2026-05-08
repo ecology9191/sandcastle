@@ -1,5 +1,11 @@
 # @ecology91/sandcastle
 
+## 0.5.11
+
+### Patch Changes
+
+- 5531559: Improve OpenCode run streaming by requesting JSON output, rendering visible thinking and tool calls, and keeping returned stdout focused on final assistant text.
+
 ## 0.5.10
 
 ### Patch Changes
