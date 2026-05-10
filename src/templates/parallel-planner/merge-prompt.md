@@ -15,11 +15,13 @@ After all branches are merged, make a single commit summarizing the merge.
 
 # CLOSE ISSUES
 
-For each branch that was merged, close its issue using the following command:
+Only close issue IDs listed below. This list is generated from the same merge-eligible task list as the branch list above; skipped, failed, missing-context, incomplete, or unmerged branches are not close candidates.
+
+For each branch that was merged, close its issue by replacing `<ID>` in the following command:
 
 `{{CLOSE_TASK_COMMAND}}`
 
-Here are all the issues:
+Merge-eligible issues:
 
 {{ISSUES}}
 

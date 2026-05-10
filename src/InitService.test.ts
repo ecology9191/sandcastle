@@ -972,6 +972,19 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("{{ISSUES}}");
     });
 
+    it("merge-prompt.md only instructs closing merge-eligible issues", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner" });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "merge-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("Only close issue IDs listed below");
+      expect(prompt).toContain("same merge-eligible task list");
+      expect(prompt).not.toContain("Here are all the issues");
+    });
+
     it("main.mts always uses the merge agent regardless of branch count", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner" });
@@ -1240,6 +1253,19 @@ describe("InitService scaffold", () => {
       );
       expect(prompt).toContain("{{BRANCHES}}");
       expect(prompt).toContain("{{ISSUES}}");
+    });
+
+    it("merge-prompt.md only instructs closing merge-eligible issues", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const prompt = await readFile(
+        join(dir, ".sandcastle", "merge-prompt.md"),
+        "utf-8",
+      );
+      expect(prompt).toContain("Only close issue IDs listed below");
+      expect(prompt).toContain("same merge-eligible task list");
+      expect(prompt).not.toContain("Here are all the issues");
     });
 
     it("parallel-planner-with-review appears in listTemplates()", () => {
