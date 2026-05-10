@@ -1,8 +1,10 @@
 import { NodeFileSystem } from "@effect/platform-node";
 import { Effect } from "effect";
-import { mkdtemp, readFile, writeFile } from "node:fs/promises";
+import { execFile as execFileCallback } from "node:child_process";
+import { mkdir, mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { describe, expect, it } from "vitest";
 import {
   scaffold,
@@ -20,6 +22,7 @@ import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 import { SKELETON_PROMPT } from "./templates.js";
 
 const makeDir = () => mkdtemp(join(tmpdir(), "init-service-"));
+const execFile = promisify(execFileCallback);
 
 const claudeCodeAgent = getAgent("claude-code")!;
 const piAgent = getAgent("pi")!;
@@ -41,6 +44,148 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
       Effect.provide(NodeFileSystem.layer),
     ),
   );
+
+type WorkflowCall =
+  | { type: "task-context"; taskId: string }
+  | { type: "run"; name?: string; promptArgs?: Record<string, string> }
+  | { type: "createSandbox"; branch?: string }
+  | { type: "sandbox.close" };
+
+const workflowBacklogManager = (contextScriptPath: string) => ({
+  name: "test-backlog",
+  label: "Test backlog",
+  templateArgs: {
+    LIST_TASKS_COMMAND: "test list tasks",
+    VIEW_TASK_COMMAND: `${process.execPath} ${contextScriptPath} <ID>`,
+    CLOSE_TASK_COMMAND: "test close <ID>",
+    BACKLOG_MANAGER_TOOLS: "",
+  },
+  envExample: "",
+});
+
+const writeWorkflowHarness = async (
+  repoDir: string,
+  options?: { contextOutput?: "value" | "empty" },
+) => {
+  const callsPath = join(repoDir, "calls.json");
+  const contextScriptPath = join(repoDir, "task-context.mjs");
+  await writeFile(callsPath, "[]");
+  await writeFile(
+    contextScriptPath,
+    `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const callsPath = process.env.SANDCASTLE_TEST_CALLS_PATH;
+const taskId = process.argv[2];
+const calls = existsSync(callsPath) ? JSON.parse(readFileSync(callsPath, "utf-8")) : [];
+calls.push({ type: "task-context", taskId });
+writeFileSync(callsPath, JSON.stringify(calls));
+
+if (process.env.SANDCASTLE_TEST_CONTEXT_OUTPUT === "empty") {
+  process.exit(0);
+}
+
+console.log(JSON.stringify({ id: taskId, body: "authoritative context for " + taskId }));
+`,
+  );
+
+  const packageDir = join(repoDir, "node_modules", "@ecology91", "sandcastle");
+  await mkdir(join(packageDir, "sandboxes"), { recursive: true });
+  await writeFile(
+    join(packageDir, "package.json"),
+    JSON.stringify({
+      type: "module",
+      exports: {
+        ".": "./index.js",
+        "./sandboxes/docker": "./sandboxes/docker.js",
+      },
+    }),
+  );
+  await writeFile(
+    join(packageDir, "sandboxes", "docker.js"),
+    `export const docker = () => ({ type: "docker" });
+`,
+  );
+  await writeFile(
+    join(packageDir, "index.js"),
+    `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+let plannerCalls = 0;
+
+const callsPath = () => process.env.SANDCASTLE_TEST_CALLS_PATH;
+const push = (entry) => {
+  const path = callsPath();
+  const calls = existsSync(path) ? JSON.parse(readFileSync(path, "utf-8")) : [];
+  calls.push(entry);
+  writeFileSync(path, JSON.stringify(calls));
+};
+
+export const claudeCode = (model) => ({ model });
+
+const planFor = () => {
+  plannerCalls += 1;
+  if (plannerCalls > 1) {
+    return '<plan>{"issues":[]}</plan>';
+  }
+  return '<plan>{"issues":[{"id":"TASK-1","title":"Hydrate context","branch":"agent/task-1"}]}</plan>';
+};
+
+export const run = async (options) => {
+  push({ type: "run", name: options.name, promptArgs: options.promptArgs });
+  if (options.name === "planner") {
+    return { stdout: planFor(), commits: [], branch: "planner" };
+  }
+  if (options.name === "implementer") {
+    return {
+      stdout: "<promise>COMPLETE</promise>",
+      completionSignal: "<promise>COMPLETE</promise>",
+      commits: [{ sha: "abc123" }],
+      branch: options.branchStrategy?.branch,
+    };
+  }
+  return {
+    stdout: "<promise>COMPLETE</promise>",
+    completionSignal: "<promise>COMPLETE</promise>",
+    commits: [],
+    branch: "main",
+  };
+};
+
+export const createSandbox = async (options) => {
+  push({ type: "createSandbox", branch: options.branch });
+  return {
+    run: async (runOptions) => run(runOptions),
+    close: async () => push({ type: "sandbox.close" }),
+  };
+};
+`,
+  );
+
+  return {
+    callsPath,
+    contextScriptPath,
+    contextOutput: options?.contextOutput ?? "value",
+  };
+};
+
+const runGeneratedWorkflow = async (
+  repoDir: string,
+  harness: Awaited<ReturnType<typeof writeWorkflowHarness>>,
+) => {
+  const mainPath = join(repoDir, ".sandcastle", "main.mts");
+  return execFile(process.execPath, ["--import", "tsx", mainPath], {
+    cwd: process.cwd(),
+    env: {
+      ...process.env,
+      SANDCASTLE_TEST_CALLS_PATH: harness.callsPath,
+      SANDCASTLE_TEST_CONTEXT_OUTPUT: harness.contextOutput,
+    },
+    maxBuffer: 1024 * 1024,
+    timeout: 20_000,
+  });
+};
+
+const readWorkflowCalls = async (callsPath: string): Promise<WorkflowCall[]> =>
+  JSON.parse(await readFile(callsPath, "utf-8")) as WorkflowCall[];
 
 // ---------------------------------------------------------------------------
 // Agent registry
@@ -823,6 +968,68 @@ describe("InitService scaffold", () => {
       expect(prompt, `${template}/${file}`).not.toContain("{{TASK_ID}}");
     }
   });
+
+  it.each(["parallel-planner", "parallel-planner-with-review"])(
+    "%s injects loaded task context before implementer launch",
+    async (templateName) => {
+      const dir = await makeDir();
+      const harness = await writeWorkflowHarness(dir);
+      await runScaffold(dir, {
+        templateName,
+        backlogManager: workflowBacklogManager(harness.contextScriptPath),
+      });
+
+      await runGeneratedWorkflow(dir, harness);
+
+      const calls = await readWorkflowCalls(harness.callsPath);
+      const contextIndex = calls.findIndex(
+        (call) => call.type === "task-context" && call.taskId === "TASK-1",
+      );
+      const implementerIndex = calls.findIndex(
+        (call) => call.type === "run" && call.name === "implementer",
+      );
+      const implementer = calls[implementerIndex];
+
+      expect(contextIndex).toBeGreaterThan(-1);
+      expect(implementerIndex).toBeGreaterThan(contextIndex);
+      expect(implementer).toMatchObject({
+        type: "run",
+        promptArgs: {
+          TASK_ID: "TASK-1",
+          TASK_CONTEXT: JSON.stringify({
+            id: "TASK-1",
+            body: "authoritative context for TASK-1",
+          }),
+        },
+      });
+    },
+  );
+
+  it.each(["parallel-planner", "parallel-planner-with-review"])(
+    "%s skips implementer launch when task context is missing",
+    async (templateName) => {
+      const dir = await makeDir();
+      const harness = await writeWorkflowHarness(dir, {
+        contextOutput: "empty",
+      });
+      await runScaffold(dir, {
+        templateName,
+        backlogManager: workflowBacklogManager(harness.contextScriptPath),
+      });
+
+      const { stderr } = await runGeneratedWorkflow(dir, harness);
+
+      const calls = await readWorkflowCalls(harness.callsPath);
+      expect(calls).toContainEqual({ type: "task-context", taskId: "TASK-1" });
+      expect(
+        calls.some(
+          (call) => call.type === "run" && call.name === "implementer",
+        ),
+      ).toBe(false);
+      expect(stderr).toContain("TASK-1");
+      expect(stderr).toContain("Task context command produced no output");
+    },
+  );
 
   it("createLabel defaults to true (label retained when not specified)", async () => {
     const dir = await makeDir();
