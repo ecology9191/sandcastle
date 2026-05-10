@@ -8,6 +8,7 @@ import type { AgentProvider } from "./AgentProvider.js";
 import {
   ClackDisplay,
   Display,
+  FileAndTerminalDisplay,
   FileDisplay,
   type Severity,
 } from "./Display.js";
@@ -23,7 +24,11 @@ import {
   SandboxConfig,
 } from "./SandboxFactory.js";
 import type { SandboxProvider, BranchStrategy } from "./SandboxProvider.js";
-import { resolveEnv } from "./EnvResolver.js";
+import {
+  resolveEnv,
+  resolveTerminalOutputMode,
+  stripHostSandcastleEnv,
+} from "./EnvResolver.js";
 import { formatErrorMessage } from "./ErrorHandler.js";
 import type { SandboxError } from "./errors.js";
 import {
@@ -360,8 +365,10 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
   const resolvedEnv = await Effect.runPromise(
     resolveEnv(hostRepoDir).pipe(Effect.provide(NodeContext.layer)),
   );
+  const terminalOutputMode = resolveTerminalOutputMode(resolvedEnv);
+  const sandboxResolvedEnv = stripHostSandcastleEnv(resolvedEnv);
   const env = mergeProviderEnv({
-    resolvedEnv,
+    resolvedEnv: sandboxResolvedEnv,
     agentProviderEnv: provider.env,
     sandboxProviderEnv: options.sandbox.env,
   });
@@ -404,7 +411,11 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
             hostRepoDir,
           });
           return Layer.provide(
-            FileDisplay.layer(resolvedLogging.path),
+            terminalOutputMode === "verbose"
+              ? FileAndTerminalDisplay.layer(resolvedLogging.path, {
+                  name: options.name,
+                })
+              : FileDisplay.layer(resolvedLogging.path),
             NodeFileSystem.layer,
           );
         })()

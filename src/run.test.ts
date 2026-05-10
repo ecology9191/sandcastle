@@ -1,4 +1,5 @@
-import { readFileSync, mkdtempSync, writeFileSync } from "node:fs";
+import { execSync } from "node:child_process";
+import { mkdirSync, readFileSync, mkdtempSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { describe, expect, it, vi, beforeEach, afterEach } from "vitest";
@@ -15,7 +16,7 @@ import {
   type RunOptions,
   type RunResult,
 } from "./run.js";
-import { claudeCode } from "./AgentProvider.js";
+import { claudeCode, type AgentProvider } from "./AgentProvider.js";
 import { defaultImageName } from "./sandboxes/docker.js";
 import * as sandcastle from "./SandboxProvider.js";
 import { createBindMountSandboxProvider } from "./SandboxProvider.js";
@@ -30,6 +31,101 @@ const testSandbox = createBindMountSandboxProvider({
     close: async () => {},
   }),
 });
+
+const terminalOutputAgent: AgentProvider = {
+  name: "test-agent",
+  env: {},
+  captureSessions: false,
+  buildPrintCommand: () => ({ command: "mock-agent" }),
+  parseStreamLine: (line) => {
+    const parsed = JSON.parse(line) as {
+      type?: string;
+      message?: { content?: Array<{ type?: string; text?: string }> };
+      result?: string;
+    };
+    if (parsed.type === "assistant") {
+      return (parsed.message?.content ?? [])
+        .filter(
+          (content): content is { type: string; text: string } =>
+            content.type === "text" && typeof content.text === "string",
+        )
+        .map((content) => ({ type: "text" as const, text: content.text }));
+    }
+    if (parsed.type === "result" && typeof parsed.result === "string") {
+      return [{ type: "result" as const, result: parsed.result }];
+    }
+    return [];
+  },
+};
+
+const createTerminalOutputHarness = (
+  envFileContent?: string,
+): {
+  readonly dir: string;
+  readonly createCalls: Array<Record<string, string>>;
+  readonly sandbox: ReturnType<typeof createBindMountSandboxProvider>;
+} => {
+  const dir = mkdtempSync(join(tmpdir(), "sandcastle-terminal-output-"));
+  execSync("git init -b main", { cwd: dir, stdio: "ignore" });
+  execSync('git config user.email "test@test.com"', {
+    cwd: dir,
+    stdio: "ignore",
+  });
+  execSync('git config user.name "Test"', { cwd: dir, stdio: "ignore" });
+  writeFileSync(join(dir, "README.md"), "# Test\n");
+  execSync("git add README.md", { cwd: dir, stdio: "ignore" });
+  execSync('git commit -m "initial"', { cwd: dir, stdio: "ignore" });
+
+  if (envFileContent !== undefined) {
+    mkdirSync(join(dir, ".sandcastle"), { recursive: true });
+    writeFileSync(join(dir, ".sandcastle", ".env"), envFileContent);
+  }
+
+  const createCalls: Array<Record<string, string>> = [];
+  const sandbox = createBindMountSandboxProvider({
+    name: "test-sandbox",
+    create: async (createOptions) => {
+      createCalls.push(createOptions.env);
+      return {
+        worktreePath: createOptions.worktreePath,
+        exec: async (command, options) => {
+          if (command === "mock-agent") {
+            const lines = [
+              JSON.stringify({
+                type: "assistant",
+                message: {
+                  content: [
+                    {
+                      type: "text",
+                      text: "mock agent text <promise>COMPLETE</promise>",
+                    },
+                  ],
+                },
+              }),
+              JSON.stringify({
+                type: "result",
+                result: "mock agent text <promise>COMPLETE</promise>",
+              }),
+            ];
+            for (const line of lines) {
+              options?.onLine?.(line);
+            }
+            return { stdout: lines.join("\n"), stderr: "", exitCode: 0 };
+          }
+          if (command.includes("git rev-parse --abbrev-ref HEAD")) {
+            return { stdout: "main\n", stderr: "", exitCode: 0 };
+          }
+          return { stdout: "", stderr: "", exitCode: 0 };
+        },
+        copyFileIn: async () => {},
+        copyFileOut: async () => {},
+        close: async () => {},
+      };
+    },
+  });
+
+  return { dir, createCalls, sandbox };
+};
 
 describe("printFileDisplayStartup", () => {
   let consoleSpy: ReturnType<typeof vi.spyOn>;
@@ -751,6 +847,147 @@ describe("run() error logging to file", () => {
         logging: { type: "file", path: logPath },
       }),
     ).rejects.toThrow("SOURCE_BRANCH");
+  });
+});
+
+describe("SANDCASTLE_TERMINAL_OUTPUT", () => {
+  let consoleSpy: ReturnType<typeof vi.spyOn>;
+  let stdoutWriteSpy: { mockRestore: () => void };
+  let originalTerminalOutput: string | undefined;
+
+  beforeEach(() => {
+    originalTerminalOutput = process.env.SANDCASTLE_TERMINAL_OUTPUT;
+    delete process.env.SANDCASTLE_TERMINAL_OUTPUT;
+    consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+    stdoutWriteSpy = vi
+      .spyOn(process.stdout, "write")
+      .mockImplementation(() => true);
+  });
+
+  afterEach(() => {
+    stdoutWriteSpy.mockRestore();
+    consoleSpy.mockRestore();
+    if (originalTerminalOutput === undefined) {
+      delete process.env.SANDCASTLE_TERMINAL_OUTPUT;
+    } else {
+      process.env.SANDCASTLE_TERMINAL_OUTPUT = originalTerminalOutput;
+    }
+  });
+
+  const runTerminalOutputHarness = async (
+    envFileContent: string | undefined,
+    name: string,
+  ) => {
+    const harness = createTerminalOutputHarness(envFileContent);
+    const result = await run({
+      agent: terminalOutputAgent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name,
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+    return { ...harness, result, terminalOutput };
+  };
+
+  it("defaults to off and ignores undeclared process env fallback", async () => {
+    process.env.SANDCASTLE_TERMINAL_OUTPUT = "verbose";
+
+    const { result, terminalOutput } = await runTerminalOutputHarness(
+      undefined,
+      "default-off-run",
+    );
+
+    expect(result.logFilePath).toBeDefined();
+    expect(terminalOutput).toContain("tail -f");
+    expect(terminalOutput).toContain("[default-off-run] Started");
+    expect(terminalOutput).not.toContain("[default-off-run] Sandcastle Run");
+    expect(terminalOutput).not.toContain("[default-off-run] Agent started");
+  });
+
+  it("keeps file-only logging when project env explicitly sets off", async () => {
+    process.env.SANDCASTLE_TERMINAL_OUTPUT = "verbose";
+
+    const { terminalOutput } = await runTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=off\n",
+      "explicit-off-run",
+    );
+
+    expect(terminalOutput).toContain("tail -f");
+    expect(terminalOutput).not.toContain("[explicit-off-run] Sandcastle Run");
+    expect(terminalOutput).not.toContain("[explicit-off-run] Agent started");
+  });
+
+  it("adds prefixed lifecycle terminal output while preserving the run log", async () => {
+    process.env.SANDCASTLE_TERMINAL_OUTPUT = "off";
+
+    const { createCalls, result, terminalOutput } =
+      await runTerminalOutputHarness(
+        "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+        "visible-run",
+      );
+
+    expect(result.logFilePath).toBeDefined();
+    const log = readFileSync(result.logFilePath!, "utf-8");
+    expect(log).toContain("Sandcastle Run");
+    expect(log).toContain("Agent started");
+    expect(terminalOutput).toContain("tail -f");
+    expect(terminalOutput).toContain("[visible-run] Sandcastle Run");
+    expect(terminalOutput).toContain("[visible-run] Agent started");
+    expect(createCalls[0]).not.toHaveProperty("SANDCASTLE_TERMINAL_OUTPUT");
+  });
+
+  it("uses process env fallback when the key is declared empty", async () => {
+    process.env.SANDCASTLE_TERMINAL_OUTPUT = "verbose";
+
+    const { terminalOutput } = await runTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=\n",
+      "fallback-run",
+    );
+
+    expect(terminalOutput).toContain("[fallback-run] Sandcastle Run");
+    expect(terminalOutput).toContain("[fallback-run] Agent started");
+  });
+
+  it("leaves explicit stdout logging out of file-log fan-out", async () => {
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+    );
+
+    const result = await run({
+      agent: terminalOutputAgent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name: "stdout-run",
+      logging: { type: "stdout" },
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+    expect(result.logFilePath).toBeUndefined();
+    expect(terminalOutput).not.toContain("tail -f");
+  });
+
+  it("fails invalid values before sandbox setup or run-log fan-out", async () => {
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=loud\n",
+    );
+
+    await expect(
+      run({
+        agent: terminalOutputAgent,
+        sandbox: harness.sandbox,
+        prompt: "do the work",
+        branchStrategy: { type: "head" },
+        cwd: harness.dir,
+        name: "invalid-run",
+      }),
+    ).rejects.toThrow('Invalid SANDCASTLE_TERMINAL_OUTPUT value "loud"');
+
+    expect(harness.createCalls).toEqual([]);
+    expect(consoleSpy).not.toHaveBeenCalled();
   });
 });
 

@@ -2,6 +2,28 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { join } from "node:path";
 
+export const TERMINAL_OUTPUT_ENV_KEY = "SANDCASTLE_TERMINAL_OUTPUT";
+
+export type TerminalOutputMode = "off" | "verbose";
+
+export const resolveTerminalOutputMode = (
+  env: Record<string, string>,
+): TerminalOutputMode => {
+  const value = env[TERMINAL_OUTPUT_ENV_KEY];
+  if (value === undefined) return "off";
+  if (value === "off" || value === "verbose") return value;
+  throw new Error(
+    `Invalid ${TERMINAL_OUTPUT_ENV_KEY} value "${value}". Expected "off" or "verbose".`,
+  );
+};
+
+export const stripHostSandcastleEnv = (
+  env: Record<string, string>,
+): Record<string, string> => {
+  const { [TERMINAL_OUTPUT_ENV_KEY]: _terminalOutput, ...sandboxEnv } = env;
+  return sandboxEnv;
+};
+
 const parseEnvFile = (
   filePath: string,
 ): Effect.Effect<Record<string, string>, never, FileSystem.FileSystem> =>

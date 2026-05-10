@@ -59,10 +59,180 @@ export interface DisplayService {
   ) => Effect.Effect<void>;
 }
 
+export interface PrefixedTerminalDisplayOptions {
+  readonly name?: string;
+}
+
 export class Display extends Context.Tag("Display")<
   Display,
   DisplayService
 >() {}
+
+const makePrefixedMessage = (
+  name: string | undefined,
+  message: string,
+): string => {
+  const label = `[${name ?? "Agent"}]`;
+  return message.startsWith(`${label} `) ? message : `${label} ${message}`;
+};
+
+const makePrefixedTerminalDisplayService = (
+  options: PrefixedTerminalDisplayOptions,
+): DisplayService => {
+  const write = (message: string): Effect.Effect<void> =>
+    Effect.sync(() => console.log(makePrefixedMessage(options.name, message)));
+
+  return {
+    intro: () => Effect.void,
+
+    status: (message) => write(message),
+
+    spinner: (message, effect) =>
+      Effect.gen(function* () {
+        yield* write(`${message}...`);
+        const result = yield* effect;
+        yield* write(`${message} done`);
+        return result;
+      }),
+
+    summary: (title, rows) =>
+      Effect.sync(() => {
+        const lines = [
+          makePrefixedMessage(options.name, title),
+          ...Object.entries(rows).map(([key, value]) =>
+            makePrefixedMessage(options.name, `  ${key}: ${value}`),
+          ),
+        ];
+        console.log(lines.join("\n"));
+      }),
+
+    taskLog: (title, effect) =>
+      Effect.gen(function* () {
+        yield* write(title);
+        const result = yield* effect((msg) => {
+          console.log(makePrefixedMessage(options.name, `  ${msg}`));
+        });
+        yield* write(`${title} done`);
+        return result;
+      }),
+
+    text: () => Effect.void,
+
+    toolCall: () => Effect.void,
+  };
+};
+
+const fanOutDisplayServices = (
+  primary: DisplayService,
+  secondary: DisplayService,
+): DisplayService => ({
+  intro: (title) =>
+    Effect.gen(function* () {
+      yield* primary.intro(title);
+      yield* secondary.intro(title);
+    }),
+
+  status: (message, severity) =>
+    Effect.gen(function* () {
+      yield* primary.status(message, severity);
+      yield* secondary.status(message, severity);
+    }),
+
+  spinner: (message, effect) =>
+    primary.spinner(message, secondary.spinner(message, effect)),
+
+  summary: (title, rows) =>
+    Effect.gen(function* () {
+      yield* primary.summary(title, rows);
+      yield* secondary.summary(title, rows);
+    }),
+
+  taskLog: (title, effect) =>
+    primary.taskLog(title, (primaryMessage) =>
+      secondary.taskLog(title, (secondaryMessage) =>
+        effect((msg) => {
+          primaryMessage(msg);
+          secondaryMessage(msg);
+        }),
+      ),
+    ),
+
+  text: (message) =>
+    Effect.gen(function* () {
+      yield* primary.text(message);
+      yield* secondary.text(message);
+    }),
+
+  toolCall: (name, formattedArgs) =>
+    Effect.gen(function* () {
+      yield* primary.toolCall(name, formattedArgs);
+      yield* secondary.toolCall(name, formattedArgs);
+    }),
+});
+
+const makeFileDisplayService = (
+  fs: FileSystem.FileSystem,
+  filePath: string,
+): Effect.Effect<DisplayService> =>
+  Effect.gen(function* () {
+    yield* fs
+      .makeDirectory(dirname(filePath), { recursive: true })
+      .pipe(Effect.orDie);
+    const delimiter = `\n--- Run started: ${new Date().toISOString()} ---\n`;
+    yield* fs
+      .writeFileString(filePath, delimiter, { flag: "a" })
+      .pipe(Effect.orDie);
+
+    const appendToLog = (line: string): Effect.Effect<void> =>
+      fs
+        .writeFileString(filePath, line + "\n", { flag: "a" })
+        .pipe(Effect.ignore);
+
+    return {
+      intro: () => Effect.void,
+
+      status: (message, _severity) =>
+        appendToLog(message.replace(/^\[[^\]]+\] /, "")),
+
+      spinner: (message, effect) =>
+        Effect.gen(function* () {
+          yield* appendToLog(`${message}...`);
+          const start = Date.now();
+          const result = yield* effect;
+          const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+          yield* appendToLog(`${message} done (${elapsed}s)`);
+          return result;
+        }),
+
+      summary: (title, rows) => {
+        const lines = Object.entries(rows)
+          .map(([key, value]) => `  ${key}: ${value}`)
+          .join("\n");
+        return appendToLog(`${title}\n${lines}`);
+      },
+
+      taskLog: (title, effect) =>
+        Effect.gen(function* () {
+          yield* appendToLog(title);
+          const start = Date.now();
+          const messages: string[] = [];
+          const result = yield* effect((msg) => {
+            messages.push(msg);
+          });
+          const elapsed = ((Date.now() - start) / 1000).toFixed(1);
+          for (const msg of messages) {
+            yield* appendToLog(`  ${msg}`);
+          }
+          yield* appendToLog(`${title} done (${elapsed}s)`);
+          return result;
+        }),
+
+      text: (message) => appendToLog(message),
+
+      toolCall: (name, formattedArgs) =>
+        appendToLog(`${name}(${formattedArgs})`),
+    };
+  });
 
 export const SilentDisplay = {
   layer: (ref: Ref.Ref<ReadonlyArray<DisplayEntry>>): Layer.Layer<Display> =>
@@ -135,63 +305,26 @@ export const FileDisplay = {
       Display,
       Effect.gen(function* () {
         const fs = yield* FileSystem.FileSystem;
-        yield* fs
-          .makeDirectory(dirname(filePath), { recursive: true })
-          .pipe(Effect.orDie);
-        const delimiter = `\n--- Run started: ${new Date().toISOString()} ---\n`;
-        yield* fs
-          .writeFileString(filePath, delimiter, { flag: "a" })
-          .pipe(Effect.orDie);
+        return yield* makeFileDisplayService(fs, filePath);
+      }),
+    ),
+};
 
-        const appendToLog = (line: string): Effect.Effect<void> =>
-          fs
-            .writeFileString(filePath, line + "\n", { flag: "a" })
-            .pipe(Effect.ignore);
+export const FileAndTerminalDisplay = {
+  layer: (
+    filePath: string,
+    options: PrefixedTerminalDisplayOptions,
+  ): Layer.Layer<Display, never, FileSystem.FileSystem> =>
+    Layer.effect(
+      Display,
+      Effect.gen(function* () {
+        const fs = yield* FileSystem.FileSystem;
+        const fileDisplay = yield* makeFileDisplayService(fs, filePath);
 
-        return {
-          intro: () => Effect.void,
-
-          status: (message, _severity) =>
-            appendToLog(message.replace(/^\[[^\]]+\] /, "")),
-
-          spinner: (message, effect) =>
-            Effect.gen(function* () {
-              yield* appendToLog(`${message}...`);
-              const start = Date.now();
-              const result = yield* effect;
-              const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-              yield* appendToLog(`${message} done (${elapsed}s)`);
-              return result;
-            }),
-
-          summary: (title, rows) => {
-            const lines = Object.entries(rows)
-              .map(([key, value]) => `  ${key}: ${value}`)
-              .join("\n");
-            return appendToLog(`${title}\n${lines}`);
-          },
-
-          taskLog: (title, effect) =>
-            Effect.gen(function* () {
-              yield* appendToLog(title);
-              const start = Date.now();
-              const messages: string[] = [];
-              const result = yield* effect((msg) => {
-                messages.push(msg);
-              });
-              const elapsed = ((Date.now() - start) / 1000).toFixed(1);
-              for (const msg of messages) {
-                yield* appendToLog(`  ${msg}`);
-              }
-              yield* appendToLog(`${title} done (${elapsed}s)`);
-              return result;
-            }),
-
-          text: (message) => appendToLog(message),
-
-          toolCall: (name, formattedArgs) =>
-            appendToLog(`${name}(${formattedArgs})`),
-        };
+        return fanOutDisplayServices(
+          fileDisplay,
+          makePrefixedTerminalDisplayService(options),
+        );
       }),
     ),
 };
