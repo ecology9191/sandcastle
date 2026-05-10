@@ -128,6 +128,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // Phase 2: Execute
   //
   // Spawn one sonnet agent per issue, all running concurrently.
+  // The host loads deterministic task context before the implementer starts;
+  // missing or empty context rejects only that issue before agent launch.
   // Each agent works on its own branch so there are no conflicts during
   // execution — merging happens in Phase 3.
   //
@@ -172,7 +174,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   }
 
   // Only pass branches with completion evidence and commits to the merge phase.
-  // Commits without the completion signal may be partial work and stay visible.
+  // Merge eligibility is conservative: fulfilled run, completion signal, and
+  // commits are required. Skipped branches stay visible in operator output.
   for (const [i, outcome] of settled.entries()) {
     if (outcome.status !== "fulfilled") {
       continue;

@@ -931,6 +931,9 @@ describe("InitService scaffold", () => {
       expect(mainTs).toContain("TASK_CONTEXT: taskContext");
       expect(mainTs).toContain("Task context command produced no output");
       expect(mainTs).toContain("Failed to load task context for ${taskId}");
+      expect(mainTs).toContain(
+        "The host loads deterministic task context before the implementer starts",
+      );
       expect(mainTs).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
@@ -958,6 +961,9 @@ describe("InitService scaffold", () => {
       );
       expect(mainTs).toContain("Skipped incomplete branch");
       expect(mainTs).toContain("completed but produced no commits");
+      expect(mainTs).toContain(
+        "Merge eligibility is conservative: fulfilled run, completion signal",
+      );
     });
 
     it("merge-prompt.md contains {{BRANCHES}} and {{ISSUES}} prompt arguments", async () => {
@@ -1177,6 +1183,9 @@ describe("InitService scaffold", () => {
       expect(mainTs).toContain("TASK_CONTEXT: taskContext");
       expect(mainTs).toContain("Task context command produced no output");
       expect(mainTs).toContain("Failed to load task context for ${taskId}");
+      expect(mainTs).toContain(
+        "load deterministic task context before creating a sandbox",
+      );
       expect(mainTs).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
@@ -1230,6 +1239,9 @@ describe("InitService scaffold", () => {
         "entry.outcome.value.review.commits.length > 0",
       );
       expect(mainTs).toContain("Skipped incomplete review");
+      expect(mainTs).toContain(
+        "Merge eligibility is conservative: implementer commits plus",
+      );
     });
 
     it("review-prompt.md contains {{BRANCH}} prompt argument", async () => {

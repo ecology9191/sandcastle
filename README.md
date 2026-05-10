@@ -604,6 +604,16 @@ Tell the agent to output your chosen string(s) in the prompt, and the orchestrat
 
 Select a template during `sandcastle init` when prompted, or re-run init in a fresh repo to try a different one.
 
+#### Parallel planner safety behavior
+
+The `parallel-planner` and `parallel-planner-with-review` templates load task context on the host before each implementer agent starts. The planner output stays small - each task includes only its ID, title, and branch - then the scaffold runs the selected backlog manager's view command and passes that deterministic output to the implementer as `{{TASK_CONTEXT}}`.
+
+If the task context command fails or returns empty output, that task's implementer does not start. The surrounding `Promise.allSettled` loop logs the rejected task as a failed issue and continues with the other planned tasks.
+
+Merge eligibility is deliberately conservative. In `parallel-planner`, a branch reaches the merge prompt only when the implementer run fulfilled, emitted the configured completion signal, and produced commits. In `parallel-planner-with-review`, the implementer must fulfill, emit the completion signal, and produce commits; the reviewer must also fulfill and emit the completion signal. Reviewer commits are optional.
+
+Skipped branches are printed in the operator output instead of being silently ignored. Commits without a completion signal are reported as `Skipped incomplete branch ...`, completed runs with no commits are reported as skipped with no merge, missing reviewer completion is reported as `Skipped incomplete review ...`, and a cycle with no eligible branches prints `No merge-eligible branches. Nothing to merge.` The merge prompt receives only merge-eligible issue IDs for closure; the scaffold does not add automatic programmatic issue closure.
+
 ## CLI commands
 
 ### `sandcastle init`
