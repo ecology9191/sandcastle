@@ -1,6 +1,6 @@
 # ISSUES
 
-Here are the open issues in the repo:
+Here are the claimable agent issues in the repo:
 
 <issues-json>
 
@@ -32,4 +32,4 @@ Output your plan as a JSON object wrapped in `<plan>` tags:
 {"issues": [{"id": "bd-a1b2", "title": "Fix auth bug", "branch": "sandcastle/issue-bd-a1b2-fix-auth-bug"}]}
 </plan>
 
-Include only unblocked issues. If every issue is blocked, include the single highest-priority candidate (the one with the fewest or weakest dependencies).
+Include only unblocked issues. If every issue is blocked, output an empty `issues` array. Never include blocked, deferred, or `ready-for-human` issues.

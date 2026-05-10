@@ -49,6 +49,16 @@ const copyToWorktree = ["node_modules"];
 
 const taskContextCommandTemplate = "{{VIEW_TASK_COMMAND}}";
 const taskContextMaxBuffer = 10 * 1024 * 1024;
+const humanGateCommand = "{{HUMAN_GATES_COMMAND}}";
+const humanGateMaxBuffer = 10 * 1024 * 1024;
+
+type HumanGateIssue = {
+  id?: string;
+  number?: number;
+  title?: string;
+  status?: string;
+  defer_until?: string;
+};
 
 const shellQuote = (value: string): string =>
   "'" + value.replace(/'/g, "'\\''") + "'";
@@ -74,12 +84,63 @@ const loadTaskContext = async (taskId: string): Promise<string> => {
   }
 };
 
+const listHumanGateIssues = async (): Promise<HumanGateIssue[]> => {
+  const { stdout } = await exec(humanGateCommand, {
+    maxBuffer: humanGateMaxBuffer,
+  });
+  const trimmed = stdout.trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  const parsed = JSON.parse(trimmed) as unknown;
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Human gate command must return a JSON array");
+  }
+
+  return parsed as HumanGateIssue[];
+};
+
+const formatHumanGateIssue = (issue: HumanGateIssue): string => {
+  const id =
+    issue.id ??
+    (issue.number === undefined ? "unknown issue" : `#${issue.number}`);
+  const title = issue.title ?? "(untitled)";
+  const deferUntil = issue.defer_until
+    ? `, deferred until ${issue.defer_until}`
+    : "";
+  const status = issue.status ? ` (${issue.status}${deferUntil})` : "";
+
+  return `${id}: ${title}${status}`;
+};
+
+const stopIfHumanGateOpen = async (): Promise<void> => {
+  const humanGateIssues = await listHumanGateIssues();
+
+  if (humanGateIssues.length === 0) {
+    return;
+  }
+
+  console.error(
+    "Human input required. Sandcastle will not plan or run agent work while HITL issues are open or deferred:",
+  );
+
+  for (const issue of humanGateIssues) {
+    console.error(`  ${formatHumanGateIssue(issue)}`);
+  }
+
+  process.exit(1);
+};
+
 // ---------------------------------------------------------------------------
 // Main loop
 // ---------------------------------------------------------------------------
 
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
+  await stopIfHumanGateOpen();
 
   // -------------------------------------------------------------------------
   // Phase 1: Plan

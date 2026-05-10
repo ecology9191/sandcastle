@@ -46,18 +46,23 @@ const runScaffold = (repoDir: string, options?: Partial<ScaffoldOptions>) =>
   );
 
 type WorkflowCall =
+  | { type: "human-gates" }
   | { type: "task-context"; taskId: string }
   | { type: "run"; name?: string; promptArgs?: Record<string, string> }
   | { type: "createSandbox"; branch?: string }
   | { type: "sandbox.close" };
 
-const workflowBacklogManager = (contextScriptPath: string) => ({
+const workflowBacklogManager = (
+  contextScriptPath: string,
+  humanGatesScriptPath: string,
+) => ({
   name: "test-backlog",
   label: "Test backlog",
   templateArgs: {
     LIST_TASKS_COMMAND: "test list tasks",
     VIEW_TASK_COMMAND: `${process.execPath} ${contextScriptPath} <ID>`,
     CLOSE_TASK_COMMAND: "test close <ID>",
+    HUMAN_GATES_COMMAND: `${process.execPath} ${humanGatesScriptPath}`,
     BACKLOG_MANAGER_TOOLS: "",
   },
   envExample: "",
@@ -65,10 +70,14 @@ const workflowBacklogManager = (contextScriptPath: string) => ({
 
 const writeWorkflowHarness = async (
   repoDir: string,
-  options?: { contextOutput?: "value" | "empty" },
+  options?: {
+    contextOutput?: "value" | "empty";
+    humanGateOutput?: "empty" | "present";
+  },
 ) => {
   const callsPath = join(repoDir, "calls.json");
   const contextScriptPath = join(repoDir, "task-context.mjs");
+  const humanGatesScriptPath = join(repoDir, "human-gates.mjs");
   await writeFile(callsPath, "[]");
   await writeFile(
     contextScriptPath,
@@ -85,6 +94,22 @@ if (process.env.SANDCASTLE_TEST_CONTEXT_OUTPUT === "empty") {
 }
 
 console.log(JSON.stringify({ id: taskId, body: "authoritative context for " + taskId }));
+`,
+  );
+  await writeFile(
+    humanGatesScriptPath,
+    `import { existsSync, readFileSync, writeFileSync } from "node:fs";
+
+const callsPath = process.env.SANDCASTLE_TEST_CALLS_PATH;
+const calls = existsSync(callsPath) ? JSON.parse(readFileSync(callsPath, "utf-8")) : [];
+calls.push({ type: "human-gates" });
+writeFileSync(callsPath, JSON.stringify(calls));
+
+if (process.env.SANDCASTLE_TEST_HUMAN_GATES === "present") {
+  console.log(JSON.stringify([{ id: "TASK-HITL", title: "Approve shell", status: "deferred", defer_until: "2099-01-01T00:00:00Z" }]));
+} else {
+  console.log("[]");
+}
 `,
   );
 
@@ -163,7 +188,9 @@ export const createSandbox = async (options) => {
   return {
     callsPath,
     contextScriptPath,
+    humanGatesScriptPath,
     contextOutput: options?.contextOutput ?? "value",
+    humanGateOutput: options?.humanGateOutput ?? "empty",
   };
 };
 
@@ -178,6 +205,7 @@ const runGeneratedWorkflow = async (
       ...process.env,
       SANDCASTLE_TEST_CALLS_PATH: harness.callsPath,
       SANDCASTLE_TEST_CONTEXT_OUTPUT: harness.contextOutput,
+      SANDCASTLE_TEST_HUMAN_GATES: harness.humanGateOutput,
     },
     maxBuffer: 1024 * 1024,
     timeout: 20_000,
@@ -976,7 +1004,10 @@ describe("InitService scaffold", () => {
       const harness = await writeWorkflowHarness(dir);
       await runScaffold(dir, {
         templateName,
-        backlogManager: workflowBacklogManager(harness.contextScriptPath),
+        backlogManager: workflowBacklogManager(
+          harness.contextScriptPath,
+          harness.humanGatesScriptPath,
+        ),
       });
 
       await runGeneratedWorkflow(dir, harness);
@@ -1006,6 +1037,34 @@ describe("InitService scaffold", () => {
   );
 
   it.each(["parallel-planner", "parallel-planner-with-review"])(
+    "%s stops before planning when human gate is open",
+    async (templateName) => {
+      const dir = await makeDir();
+      const harness = await writeWorkflowHarness(dir, {
+        humanGateOutput: "present",
+      });
+      await runScaffold(dir, {
+        templateName,
+        backlogManager: workflowBacklogManager(
+          harness.contextScriptPath,
+          harness.humanGatesScriptPath,
+        ),
+      });
+
+      await expect(runGeneratedWorkflow(dir, harness)).rejects.toMatchObject({
+        code: 1,
+        stderr: expect.stringContaining("TASK-HITL"),
+      });
+
+      const calls = await readWorkflowCalls(harness.callsPath);
+      expect(calls).toContainEqual({ type: "human-gates" });
+      expect(calls.some((call) => call.type === "run")).toBe(false);
+      expect(calls.some((call) => call.type === "task-context")).toBe(false);
+      expect(calls.some((call) => call.type === "createSandbox")).toBe(false);
+    },
+  );
+
+  it.each(["parallel-planner", "parallel-planner-with-review"])(
     "%s skips implementer launch when task context is missing",
     async (templateName) => {
       const dir = await makeDir();
@@ -1014,7 +1073,10 @@ describe("InitService scaffold", () => {
       });
       await runScaffold(dir, {
         templateName,
-        backlogManager: workflowBacklogManager(harness.contextScriptPath),
+        backlogManager: workflowBacklogManager(
+          harness.contextScriptPath,
+          harness.humanGatesScriptPath,
+        ),
       });
 
       const { stderr } = await runGeneratedWorkflow(dir, harness);
@@ -1047,6 +1109,24 @@ describe("InitService scaffold", () => {
     await expect(
       runScaffold(dir, { templateName: "nonexistent" }),
     ).rejects.toThrow("nonexistent");
+  });
+
+  it.each([
+    "simple-loop",
+    "sequential-reviewer",
+    "parallel-planner",
+    "parallel-planner-with-review",
+  ])("%s includes a human gate stopper", async (templateName) => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      templateName,
+      backlogManager: getBacklogManager("beads"),
+    });
+
+    const main = await readFile(join(dir, ".sandcastle", "main.mts"), "utf-8");
+    expect(main).toContain("stopIfHumanGateOpen");
+    expect(main).toContain("bd list --label ready-for-human");
+    expect(main).not.toContain("{{HUMAN_GATES_COMMAND}}");
   });
 
   describe("parallel-planner template", () => {
@@ -1585,6 +1665,9 @@ describe("InitService scaffold", () => {
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toContain(
         "gh issue close",
       );
+      expect(manager!.templateArgs.HUMAN_GATES_COMMAND).toContain(
+        "ready-for-human",
+      );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain(
         "GitHub CLI",
       );
@@ -1602,6 +1685,9 @@ describe("InitService scaffold", () => {
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("--json");
       expect(manager!.templateArgs.CLOSE_TASK_COMMAND).toBe(
         BEADS_CLOSE_COMMAND,
+      );
+      expect(manager!.templateArgs.HUMAN_GATES_COMMAND).toBe(
+        "bd list --label ready-for-human --status open,deferred --json --limit 0",
       );
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("beads");
       expect(manager!.templateArgs.BACKLOG_MANAGER_TOOLS).toContain("libicu72");
@@ -1823,6 +1909,8 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(planPrompt).toContain("bd ready --json");
+      expect(planPrompt).toContain("output an empty `issues` array");
+      expect(planPrompt).toContain("ready-for-human");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
     });
@@ -1994,6 +2082,8 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(planPrompt).toContain("bd ready --json");
+      expect(planPrompt).toContain("output an empty `issues` array");
+      expect(planPrompt).toContain("ready-for-human");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
     });

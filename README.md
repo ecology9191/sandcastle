@@ -604,6 +604,8 @@ Tell the agent to output your chosen string(s) in the prompt, and the orchestrat
 
 Select a template during `sandcastle init` when prompted, or re-run init in a fresh repo to try a different one.
 
+The issue-driving templates (`simple-loop`, `sequential-reviewer`, `parallel-planner`, and `parallel-planner-with-review`) stop before planning or running agent work when the selected backlog manager reports open human-gated issues. GitHub Issues uses the `ready-for-human` label. Beads uses `bd list --label ready-for-human --status open,deferred --json --limit 0`, so deferred HITL issues stop autonomous runs instead of being hidden by `bd ready`.
+
 #### Parallel planner safety behavior
 
 The `parallel-planner` and `parallel-planner-with-review` templates load task context on the host before each implementer agent starts. The planner output stays small - each task includes only its ID, title, and branch - then the scaffold runs the selected backlog manager's view command and passes that deterministic output to the implementer as `{{TASK_CONTEXT}}`.

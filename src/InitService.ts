@@ -234,6 +234,7 @@ export interface BacklogManagerEntry {
     readonly LIST_TASKS_COMMAND: string;
     readonly VIEW_TASK_COMMAND: string;
     readonly CLOSE_TASK_COMMAND: string;
+    readonly HUMAN_GATES_COMMAND: string;
     readonly BACKLOG_MANAGER_TOOLS: string;
   };
   /** Lines to append to `.env.example` for this backlog manager, or empty string if none needed. */
@@ -270,6 +271,8 @@ const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
+      HUMAN_GATES_COMMAND:
+        "gh issue list --state open --label ready-for-human --json number,title,labels",
       BACKLOG_MANAGER_TOOLS: GITHUB_CLI_TOOLS,
     },
     envExample: `# GitHub personal access token
@@ -282,6 +285,8 @@ GH_TOKEN=`,
       LIST_TASKS_COMMAND: "bd ready --json",
       VIEW_TASK_COMMAND: "bd show <ID> --json && bd comments <ID> --json",
       CLOSE_TASK_COMMAND: `bd close <ID> --reason "Completed by Sandcastle" --json`,
+      HUMAN_GATES_COMMAND:
+        "bd list --label ready-for-human --status open,deferred --json --limit 0",
       BACKLOG_MANAGER_TOOLS: BEADS_TOOLS,
     },
     envExample: "",
