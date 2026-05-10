@@ -1,5 +1,12 @@
 # @ecology91/sandcastle
 
+## 0.5.13
+
+### Patch Changes
+
+- 6027e5c: Document parallel planner scaffold safety behavior, including deterministic task context loading, conservative merge eligibility, and skipped branch operator output.
+- fc575c6: Fail OpenCode runs when the structured JSON stream emits an error event instead of treating the error message as successful agent output.
+
 ## 0.5.12
 
 ### Patch Changes
