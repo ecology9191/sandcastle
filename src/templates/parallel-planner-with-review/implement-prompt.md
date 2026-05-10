@@ -2,7 +2,13 @@
 
 Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
 
-Pull in the issue using `{{VIEW_TASK_COMMAND}}`. If it has a parent PRD, pull that in too.
+Use the authoritative task context below. It was loaded from the backlog manager before launch.
+
+<task-context>
+
+{{TASK_CONTEXT}}
+
+</task-context>
 
 Only work on the issue specified.
 

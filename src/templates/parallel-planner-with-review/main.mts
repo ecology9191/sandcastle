@@ -21,8 +21,12 @@
 // Or add to package.json:
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
 
+import { exec as execCallback } from "node:child_process";
+import { promisify } from "node:util";
 import * as sandcastle from "@ecology91/sandcastle";
 import { docker } from "@ecology91/sandcastle/sandboxes/docker";
+
+const exec = promisify(execCallback);
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -42,6 +46,33 @@ const hooks = {
 // starts. Avoids a full npm install from scratch; the hook above handles
 // platform-specific binaries and any packages added since the last copy.
 const copyToWorktree = ["node_modules"];
+
+const taskContextCommandTemplate = "{{VIEW_TASK_COMMAND}}";
+const taskContextMaxBuffer = 10 * 1024 * 1024;
+
+const shellQuote = (value: string): string =>
+  "'" + value.replace(/'/g, "'\\''") + "'";
+
+const loadTaskContext = async (taskId: string): Promise<string> => {
+  const command = taskContextCommandTemplate.replace(
+    /<ID>/g,
+    shellQuote(taskId),
+  );
+
+  try {
+    const { stdout } = await exec(command, { maxBuffer: taskContextMaxBuffer });
+    const taskContext = stdout.trim();
+
+    if (!taskContext) {
+      throw new Error("Task context command produced no output");
+    }
+
+    return taskContext;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load task context for ${taskId}: ${message}`);
+  }
+};
 
 // ---------------------------------------------------------------------------
 // Main loop
@@ -109,6 +140,8 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
 
   const settled = await Promise.allSettled(
     issues.map(async (issue) => {
+      const taskContext = await loadTaskContext(issue.id);
+
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
         sandbox: docker(),
@@ -127,6 +160,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
             BRANCH: issue.branch,
+            TASK_CONTEXT: taskContext,
           },
         });
 

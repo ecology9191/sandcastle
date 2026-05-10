@@ -556,6 +556,8 @@ const rewritePromptFiles = (
 /** Text file extensions eligible for `{{KEY}}` template argument substitution. */
 const TEXT_FILE_EXTENSIONS = new Set([
   ".md",
+  ".mts",
+  ".ts",
   ".txt",
   ".env",
   ".example",

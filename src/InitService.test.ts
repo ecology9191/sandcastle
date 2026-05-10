@@ -899,7 +899,7 @@ describe("InitService scaffold", () => {
       expect(mainTs).toContain("claude-opus-4-6");
     });
 
-    it("implement-prompt.md contains {{TASK_ID}}, {{ISSUE_TITLE}}, {{BRANCH}} prompt arguments", async () => {
+    it("implement-prompt.md contains task routing and context prompt arguments", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner" });
 
@@ -910,6 +910,28 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("{{TASK_ID}}");
       expect(prompt).toContain("{{ISSUE_TITLE}}");
       expect(prompt).toContain("{{BRANCH}}");
+      expect(prompt).toContain("{{TASK_CONTEXT}}");
+    });
+
+    it("main.mts loads task context before launching each implementer", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      const contextIndex = mainTs.indexOf(
+        "const taskContext = await loadTaskContext(issue.id);",
+      );
+      const runIndex = mainTs.indexOf("sandcastle.run({", contextIndex);
+
+      expect(contextIndex).toBeGreaterThan(-1);
+      expect(runIndex).toBeGreaterThan(contextIndex);
+      expect(mainTs).toContain("TASK_CONTEXT: taskContext");
+      expect(mainTs).toContain("Task context command produced no output");
+      expect(mainTs).toContain("Failed to load task context for ${taskId}");
+      expect(mainTs).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
     it("merge-prompt.md contains {{BRANCHES}} and {{ISSUES}} prompt arguments", async () => {
@@ -1079,7 +1101,7 @@ describe("InitService scaffold", () => {
       expect(mergerSection).toContain("maxIterations: 1");
     });
 
-    it("implement-prompt.md contains {{TASK_ID}}, {{ISSUE_TITLE}}, {{BRANCH}} prompt arguments", async () => {
+    it("implement-prompt.md contains task routing and context prompt arguments", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner-with-review" });
 
@@ -1090,6 +1112,33 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("{{TASK_ID}}");
       expect(prompt).toContain("{{ISSUE_TITLE}}");
       expect(prompt).toContain("{{BRANCH}}");
+      expect(prompt).toContain("{{TASK_CONTEXT}}");
+    });
+
+    it("main.mts loads task context before launching each implementer", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      const contextIndex = mainTs.indexOf(
+        "const taskContext = await loadTaskContext(issue.id);",
+      );
+      const sandboxIndex = mainTs.indexOf(
+        "sandcastle.createSandbox",
+        contextIndex,
+      );
+      const runIndex = mainTs.indexOf("sandbox.run({", contextIndex);
+
+      expect(contextIndex).toBeGreaterThan(-1);
+      expect(sandboxIndex).toBeGreaterThan(contextIndex);
+      expect(runIndex).toBeGreaterThan(contextIndex);
+      expect(mainTs).toContain("TASK_CONTEXT: taskContext");
+      expect(mainTs).toContain("Task context command produced no output");
+      expect(mainTs).toContain("Failed to load task context for ${taskId}");
+      expect(mainTs).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
     it("review-prompt.md contains {{BRANCH}} prompt argument", async () => {
@@ -1503,35 +1552,36 @@ describe("InitService scaffold", () => {
       expect(prompt).not.toContain("{{ISSUE_NUMBER}}");
     });
 
-    it("parallel-planner with github-issues produces implement-prompt with gh issue view", async () => {
+    it("parallel-planner with github-issues loads task context in main.mts", async () => {
       const dir = await makeDir();
       await runScaffold(dir, {
         templateName: "parallel-planner",
         backlogManager: getBacklogManager("github-issues"),
       });
 
-      const prompt = await readFile(
-        join(dir, ".sandcastle", "implement-prompt.md"),
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(prompt).toContain("gh issue view");
-      expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
+      expect(main).toContain("gh issue view <ID>");
+      expect(main).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
-    it("parallel-planner with beads produces implement-prompt with bd show", async () => {
+    it("parallel-planner with beads loads task context with JSON commands", async () => {
       const dir = await makeDir();
       await runScaffold(dir, {
         templateName: "parallel-planner",
         backlogManager: getBacklogManager("beads"),
       });
 
-      const prompt = await readFile(
-        join(dir, ".sandcastle", "implement-prompt.md"),
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(prompt).toContain(BEADS_VIEW_COMMAND);
-      expect(prompt).not.toContain("gh issue");
-      expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
+      expect(main).toContain(BEADS_VIEW_COMMAND);
+      expect(main).not.toContain("gh issue");
+      expect(main).not.toContain("{{VIEW_TASK_COMMAND}}");
+      expect(main).not.toContain(".beads");
     });
 
     it("parallel-planner with github-issues produces merge-prompt with gh issue close", async () => {
@@ -1687,35 +1737,36 @@ describe("InitService scaffold", () => {
       expect(prompt).not.toContain("{{ISSUE_NUMBER}}");
     });
 
-    it("parallel-planner-with-review with github-issues produces implement-prompt with gh issue view", async () => {
+    it("parallel-planner-with-review with github-issues loads task context in main.mts", async () => {
       const dir = await makeDir();
       await runScaffold(dir, {
         templateName: "parallel-planner-with-review",
         backlogManager: getBacklogManager("github-issues"),
       });
 
-      const prompt = await readFile(
-        join(dir, ".sandcastle", "implement-prompt.md"),
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(prompt).toContain("gh issue view");
-      expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
+      expect(main).toContain("gh issue view <ID>");
+      expect(main).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
-    it("parallel-planner-with-review with beads produces implement-prompt with bd show", async () => {
+    it("parallel-planner-with-review with beads loads task context with JSON commands", async () => {
       const dir = await makeDir();
       await runScaffold(dir, {
         templateName: "parallel-planner-with-review",
         backlogManager: getBacklogManager("beads"),
       });
 
-      const prompt = await readFile(
-        join(dir, ".sandcastle", "implement-prompt.md"),
+      const main = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(prompt).toContain(BEADS_VIEW_COMMAND);
-      expect(prompt).not.toContain("gh issue");
-      expect(prompt).not.toContain("{{VIEW_TASK_COMMAND}}");
+      expect(main).toContain(BEADS_VIEW_COMMAND);
+      expect(main).not.toContain("gh issue");
+      expect(main).not.toContain("{{VIEW_TASK_COMMAND}}");
+      expect(main).not.toContain(".beads");
     });
 
     it("parallel-planner-with-review with github-issues produces merge-prompt with gh issue close", async () => {
