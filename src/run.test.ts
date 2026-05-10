@@ -16,7 +16,13 @@ import {
   type RunOptions,
   type RunResult,
 } from "./run.js";
-import { claudeCode, type AgentProvider } from "./AgentProvider.js";
+import {
+  claudeCode,
+  codex,
+  opencode,
+  pi,
+  type AgentProvider,
+} from "./AgentProvider.js";
 import { defaultImageName } from "./sandboxes/docker.js";
 import * as sandcastle from "./SandboxProvider.js";
 import { createBindMountSandboxProvider } from "./SandboxProvider.js";
@@ -42,6 +48,8 @@ const terminalOutputAgent: AgentProvider = {
       type?: string;
       message?: { content?: Array<{ type?: string; text?: string }> };
       result?: string;
+      name?: string;
+      args?: string;
     };
     if (parsed.type === "assistant") {
       return (parsed.message?.content ?? [])
@@ -54,14 +62,29 @@ const terminalOutputAgent: AgentProvider = {
     if (parsed.type === "result" && typeof parsed.result === "string") {
       return [{ type: "result" as const, result: parsed.result }];
     }
+    if (
+      parsed.type === "tool_call" &&
+      typeof parsed.name === "string" &&
+      typeof parsed.args === "string"
+    ) {
+      return [
+        { type: "tool_call" as const, name: parsed.name, args: parsed.args },
+      ];
+    }
     return [];
   },
 };
 
 const createTerminalOutputHarness = (
   envFileContent?: string,
+  options?: {
+    readonly agent?: AgentProvider;
+    readonly streamLines?: readonly string[];
+    readonly commandMatches?: (command: string) => boolean;
+  },
 ): {
   readonly dir: string;
+  readonly agent: AgentProvider;
   readonly createCalls: Array<Record<string, string>>;
   readonly sandbox: ReturnType<typeof createBindMountSandboxProvider>;
 } => {
@@ -82,6 +105,26 @@ const createTerminalOutputHarness = (
   }
 
   const createCalls: Array<Record<string, string>> = [];
+  const agent = options?.agent ?? terminalOutputAgent;
+  const streamLines = options?.streamLines ?? [
+    JSON.stringify({
+      type: "assistant",
+      message: {
+        content: [
+          {
+            type: "text",
+            text: "mock agent text <promise>COMPLETE</promise>",
+          },
+        ],
+      },
+    }),
+    JSON.stringify({
+      type: "result",
+      result: "mock agent text <promise>COMPLETE</promise>",
+    }),
+  ];
+  const commandMatches =
+    options?.commandMatches ?? ((command: string) => command === "mock-agent");
   const sandbox = createBindMountSandboxProvider({
     name: "test-sandbox",
     create: async (createOptions) => {
@@ -89,28 +132,11 @@ const createTerminalOutputHarness = (
       return {
         worktreePath: createOptions.worktreePath,
         exec: async (command, options) => {
-          if (command === "mock-agent") {
-            const lines = [
-              JSON.stringify({
-                type: "assistant",
-                message: {
-                  content: [
-                    {
-                      type: "text",
-                      text: "mock agent text <promise>COMPLETE</promise>",
-                    },
-                  ],
-                },
-              }),
-              JSON.stringify({
-                type: "result",
-                result: "mock agent text <promise>COMPLETE</promise>",
-              }),
-            ];
-            for (const line of lines) {
+          if (commandMatches(command)) {
+            for (const line of streamLines) {
               options?.onLine?.(line);
             }
-            return { stdout: lines.join("\n"), stderr: "", exitCode: 0 };
+            return { stdout: streamLines.join("\n"), stderr: "", exitCode: 0 };
           }
           if (command.includes("git rev-parse --abbrev-ref HEAD")) {
             return { stdout: "main\n", stderr: "", exitCode: 0 };
@@ -124,7 +150,7 @@ const createTerminalOutputHarness = (
     },
   });
 
-  return { dir, createCalls, sandbox };
+  return { dir, agent, createCalls, sandbox };
 };
 
 describe("printFileDisplayStartup", () => {
@@ -880,7 +906,7 @@ describe("SANDCASTLE_TERMINAL_OUTPUT", () => {
   ) => {
     const harness = createTerminalOutputHarness(envFileContent);
     const result = await run({
-      agent: terminalOutputAgent,
+      agent: harness.agent,
       sandbox: harness.sandbox,
       prompt: "do the work",
       branchStrategy: { type: "head" },
@@ -936,6 +962,191 @@ describe("SANDCASTLE_TERMINAL_OUTPUT", () => {
     expect(terminalOutput).toContain("[visible-run] Sandcastle Run");
     expect(terminalOutput).toContain("[visible-run] Agent started");
     expect(createCalls[0]).not.toHaveProperty("SANDCASTLE_TERMINAL_OUTPUT");
+  });
+
+  it("renders parsed Claude Code stream text and tool calls in verbose output", async () => {
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+      {
+        agent: claudeCode("test-model", { captureSessions: false }),
+        commandMatches: (command) => command.startsWith("claude "),
+        streamLines: [
+          JSON.stringify({
+            type: "assistant",
+            message: {
+              content: [
+                { type: "text", text: "Preparing work." },
+                {
+                  type: "tool_use",
+                  name: "Bash",
+                  input: { command: "npm test" },
+                },
+              ],
+            },
+          }),
+          JSON.stringify({
+            type: "result",
+            result: "Finished. <promise>COMPLETE</promise>",
+          }),
+        ],
+      },
+    );
+
+    const result = await run({
+      agent: harness.agent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name: "claude-stream-run",
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+    const log = readFileSync(result.logFilePath!, "utf-8");
+
+    expect(terminalOutput).toContain("[claude-stream-run] Preparing work.");
+    expect(terminalOutput).toContain("[claude-stream-run] Bash(npm test)");
+    expect(log).toContain("Preparing work.");
+    expect(log).toContain("Bash(npm test)");
+  });
+
+  it("renders OpenCode reasoning, text, and tool events in verbose output", async () => {
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+      {
+        agent: opencode("test-model"),
+        commandMatches: (command) => command.startsWith("opencode "),
+        streamLines: [
+          JSON.stringify({
+            type: "reasoning",
+            part: { text: "checking approach" },
+          }),
+          JSON.stringify({
+            type: "tool_use",
+            part: { tool: "bash", input: { command: "printf ok" } },
+          }),
+          JSON.stringify({ type: "step_start" }),
+          JSON.stringify({
+            type: "text",
+            part: { text: "Final answer. <promise>COMPLETE</promise>" },
+          }),
+          JSON.stringify({
+            type: "step_finish",
+            part: { reason: "stop" },
+          }),
+        ],
+      },
+    );
+
+    const result = await run({
+      agent: harness.agent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name: "opencode-stream-run",
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+    expect(result.stdout).toBe("Final answer. <promise>COMPLETE</promise>");
+    expect(terminalOutput).toContain(
+      "[opencode-stream-run] [thinking] checking approach",
+    );
+    expect(terminalOutput).toContain("[opencode-stream-run] Bash(printf ok)");
+    expect(terminalOutput).toContain(
+      "[opencode-stream-run] Final answer. <promise>COMPLETE</promise>",
+    );
+  });
+
+  it("renders Codex parsed stream events in verbose output", async () => {
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+      {
+        agent: codex("test-model"),
+        commandMatches: (command) => command.startsWith("codex "),
+        streamLines: [
+          JSON.stringify({
+            type: "item.started",
+            item: { type: "command_execution", command: "npm test" },
+          }),
+          JSON.stringify({
+            type: "item.completed",
+            item: {
+              type: "agent_message",
+              text: "Codex finished. <promise>COMPLETE</promise>",
+            },
+          }),
+        ],
+      },
+    );
+
+    await run({
+      agent: harness.agent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name: "codex-stream-run",
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+    expect(terminalOutput).toContain("[codex-stream-run] Bash(npm test)");
+    expect(terminalOutput).toContain(
+      "[codex-stream-run] Codex finished. <promise>COMPLETE</promise>",
+    );
+  });
+
+  it("buffers Pi text deltas before rendering verbose output", async () => {
+    const textDeltas = [
+      "Hello",
+      " ",
+      "world",
+      ". ",
+      "This",
+      " ",
+      "is",
+      " ",
+      "buffered",
+      ".\n",
+    ];
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+      {
+        agent: pi("test-model"),
+        commandMatches: (command) => command.startsWith("pi "),
+        streamLines: [
+          ...textDeltas.map((delta) =>
+            JSON.stringify({
+              type: "message_update",
+              assistantMessageEvent: { type: "text_delta", delta },
+            }),
+          ),
+          JSON.stringify({
+            type: "agent_end",
+            messages: [
+              {
+                role: "assistant",
+                content: [
+                  { text: "Done. <promise>COMPLETE</promise>", type: "text" },
+                ],
+              },
+            ],
+          }),
+        ],
+      },
+    );
+
+    await run({
+      agent: harness.agent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name: "pi-stream-run",
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+    expect(terminalOutput).toContain("[pi-stream-run] Hello world. ");
+    expect(terminalOutput).toContain("[pi-stream-run] This is buffered.");
   });
 
   it("uses process env fallback when the key is declared empty", async () => {

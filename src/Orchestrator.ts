@@ -442,9 +442,15 @@ export const orchestrate = (
 
                 // Invoke the agent — buffer text deltas so Pi's single-token
                 // chunks are displayed as readable multi-word lines.
+                let streamEffectQueue: Promise<void> = Promise.resolve();
+                const enqueueStreamEffect = (effect: Effect.Effect<void>) => {
+                  streamEffectQueue = streamEffectQueue
+                    .then(() => Effect.runPromise(effect))
+                    .catch(() => {});
+                };
                 const textBuffer = new TextDeltaBuffer((chunk) => {
-                  Effect.runPromise(display.text(chunk));
-                  Effect.runPromise(
+                  enqueueStreamEffect(display.text(chunk));
+                  enqueueStreamEffect(
                     streamEmitter.emit({
                       type: "text",
                       message: chunk,
@@ -458,8 +464,8 @@ export const orchestrate = (
                 };
                 const onToolCall = (name: string, formattedArgs: string) => {
                   textBuffer.flush();
-                  Effect.runPromise(display.toolCall(name, formattedArgs));
-                  Effect.runPromise(
+                  enqueueStreamEffect(display.toolCall(name, formattedArgs));
+                  enqueueStreamEffect(
                     streamEmitter.emit({
                       type: "toolCall",
                       name,
@@ -492,6 +498,7 @@ export const orchestrate = (
 
                 // Flush any remaining buffered text deltas
                 textBuffer.dispose();
+                yield* Effect.promise(() => streamEffectQueue);
 
                 yield* display.status(label("Agent stopped"), "info");
 

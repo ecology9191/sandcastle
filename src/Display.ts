@@ -116,9 +116,9 @@ const makePrefixedTerminalDisplayService = (
         return result;
       }),
 
-    text: () => Effect.void,
+    text: (message) => write(message),
 
-    toolCall: () => Effect.void,
+    toolCall: (name, formattedArgs) => write(`${name}(${formattedArgs})`),
   };
 };
 
