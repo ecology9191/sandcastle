@@ -6,7 +6,8 @@
 //                      with their target branch names.
 //   Phase 2 (Execute): N sonnet agents run in parallel via Promise.allSettled,
 //                      each working a single issue on its own branch.
-//   Phase 3 (Merge):   A sonnet agent merges all branches that produced commits.
+//   Phase 3 (Merge):   A sonnet agent merges branches that completed and
+//                      produced commits.
 //
 // The outer loop repeats up to MAX_ITERATIONS times so that newly unblocked
 // issues are picked up after each round of merges.
@@ -170,8 +171,27 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   }
 
-  // Only pass branches that actually produced commits to the merge phase.
-  // An agent that ran successfully but made no commits has nothing to merge.
+  // Only pass branches with completion evidence and commits to the merge phase.
+  // Commits without the completion signal may be partial work and stay visible.
+  for (const [i, outcome] of settled.entries()) {
+    if (outcome.status !== "fulfilled") {
+      continue;
+    }
+
+    const issue = issues[i]!;
+    const run = outcome.value;
+
+    if (run.commits.length > 0 && run.completionSignal === undefined) {
+      console.warn(
+        `  ! Skipped incomplete branch ${issue.branch}: commits present but completion signal missing.`,
+      );
+    } else if (run.completionSignal !== undefined && run.commits.length === 0) {
+      console.log(
+        `  - ${issue.branch} completed but produced no commits; skipping merge.`,
+      );
+    }
+  }
+
   const completedIssues = settled
     .map((outcome, i) => ({ outcome, issue: issues[i]! }))
     .filter(
@@ -184,6 +204,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         issue: (typeof issues)[number];
       } =>
         entry.outcome.status === "fulfilled" &&
+        entry.outcome.value.completionSignal !== undefined &&
         entry.outcome.value.commits.length > 0,
     )
     .map((entry) => entry.issue);
@@ -191,15 +212,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   const completedBranches = completedIssues.map((i) => i.branch);
 
   console.log(
-    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
+    `\nExecution complete. ${completedBranches.length} merge-eligible branch(es):`,
   );
   for (const branch of completedBranches) {
     console.log(`  ${branch}`);
   }
 
   if (completedBranches.length === 0) {
-    // All agents ran but none made commits — nothing to merge this cycle.
-    console.log("No commits produced. Nothing to merge.");
+    // All agents ran but none produced both completion evidence and commits.
+    console.log("No merge-eligible branches. Nothing to merge.");
     continue;
   }
 

@@ -934,6 +934,32 @@ describe("InitService scaffold", () => {
       expect(mainTs).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
+    it("main.mts requires commits and completion signal before merge input", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      const mergeEligibilitySection = mainTs.slice(
+        mainTs.indexOf("const completedIssues = settled"),
+        mainTs.indexOf("const completedBranches = completedIssues"),
+      );
+
+      expect(mergeEligibilitySection).toContain(
+        'entry.outcome.status === "fulfilled"',
+      );
+      expect(mergeEligibilitySection).toContain(
+        "entry.outcome.value.completionSignal !== undefined",
+      );
+      expect(mergeEligibilitySection).toContain(
+        "entry.outcome.value.commits.length > 0",
+      );
+      expect(mainTs).toContain("Skipped incomplete branch");
+      expect(mainTs).toContain("completed but produced no commits");
+    });
+
     it("merge-prompt.md contains {{BRANCHES}} and {{ISSUES}} prompt arguments", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner" });
