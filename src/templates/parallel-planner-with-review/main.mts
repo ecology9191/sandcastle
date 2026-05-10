@@ -164,8 +164,11 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
           },
         });
 
-        // Only review if the implementer produced commits
-        if (implement.commits.length > 0) {
+        // Only review completed implementer branches with commits.
+        if (
+          implement.commits.length > 0 &&
+          implement.completionSignal !== undefined
+        ) {
           const review = await sandbox.run({
             name: "reviewer",
             maxIterations: 1,
@@ -176,15 +179,30 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             },
           });
 
-          // Merge commits from both runs so the merge phase sees all of them.
-          // Each sandbox.run() only returns commits from its own run.
+          // Keep both run results so implementer and reviewer completion evidence
+          // cannot obscure each other during merge eligibility checks.
           return {
-            ...review,
+            implement,
+            review,
             commits: [...implement.commits, ...review.commits],
           };
         }
 
-        return implement;
+        if (implement.commits.length > 0) {
+          console.warn(
+            `  ! Skipped incomplete branch ${issue.branch}: implementer commits present but completion signal missing.`,
+          );
+        } else if (implement.completionSignal !== undefined) {
+          console.log(
+            `  - ${issue.branch} implementer completed but produced no commits; skipping review and merge.`,
+          );
+        }
+
+        return {
+          implement,
+          review: undefined,
+          commits: implement.commits,
+        };
       } finally {
         await sandbox.close();
       }
@@ -200,29 +218,52 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   }
 
-  // Only pass branches that actually produced commits to the merge phase.
-  // An agent that ran successfully but made no commits has nothing to merge.
+  for (const [i, outcome] of settled.entries()) {
+    if (outcome.status !== "fulfilled") {
+      continue;
+    }
+
+    const issue = issues[i]!;
+    const run = outcome.value;
+
+    if (
+      run.implement.completionSignal !== undefined &&
+      run.implement.commits.length > 0 &&
+      run.review !== undefined &&
+      run.review.completionSignal === undefined
+    ) {
+      console.warn(
+        `  ! Skipped incomplete review for ${issue.branch}: reviewer completion signal missing.`,
+      );
+    }
+  }
+
+  // Only pass branches with completed implementer and reviewer evidence to the
+  // merge phase. A completed reviewer can approve without making new commits.
   const completedIssues = settled
     .map((outcome, i) => ({ outcome, issue: issues[i]! }))
     .filter(
       (entry) =>
         entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.commits.length > 0,
+        entry.outcome.value.implement.completionSignal !== undefined &&
+        entry.outcome.value.implement.commits.length > 0 &&
+        entry.outcome.value.review !== undefined &&
+        entry.outcome.value.review.completionSignal !== undefined,
     )
     .map((entry) => entry.issue);
 
   const completedBranches = completedIssues.map((i) => i.branch);
 
   console.log(
-    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
+    `\nExecution complete. ${completedBranches.length} merge-eligible branch(es):`,
   );
   for (const branch of completedBranches) {
     console.log(`  ${branch}`);
   }
 
   if (completedBranches.length === 0) {
-    // All agents ran but none made commits — nothing to merge this cycle.
-    console.log("No commits produced. Nothing to merge.");
+    // All agents ran but none completed both implementation and review.
+    console.log("No merge-eligible branches. Nothing to merge.");
     continue;
   }
 

@@ -1167,6 +1167,58 @@ describe("InitService scaffold", () => {
       expect(mainTs).not.toContain("{{VIEW_TASK_COMMAND}}");
     });
 
+    it("main.mts gates review and merge by implementer and reviewer completion evidence", async () => {
+      const dir = await makeDir();
+      await runScaffold(dir, { templateName: "parallel-planner-with-review" });
+
+      const mainTs = await readFile(
+        join(dir, ".sandcastle", "main.mts"),
+        "utf-8",
+      );
+      const reviewerLaunchSection = mainTs.slice(
+        mainTs.indexOf("// Only review"),
+        mainTs.indexOf("} finally"),
+      );
+      const mergeEligibilitySection = mainTs.slice(
+        mainTs.indexOf("const completedIssues = settled"),
+        mainTs.indexOf("const completedBranches = completedIssues"),
+      );
+
+      expect(reviewerLaunchSection).toContain(
+        "implement.commits.length > 0 &&",
+      );
+      expect(reviewerLaunchSection).toContain(
+        "implement.completionSignal !== undefined",
+      );
+      expect(reviewerLaunchSection).toContain("review: undefined");
+      expect(reviewerLaunchSection).toContain(
+        "implementer commits present but completion signal missing",
+      );
+      expect(reviewerLaunchSection).toContain(
+        "implementer completed but produced no commits",
+      );
+
+      expect(mergeEligibilitySection).toContain(
+        'entry.outcome.status === "fulfilled"',
+      );
+      expect(mergeEligibilitySection).toContain(
+        "entry.outcome.value.implement.completionSignal !== undefined",
+      );
+      expect(mergeEligibilitySection).toContain(
+        "entry.outcome.value.implement.commits.length > 0",
+      );
+      expect(mergeEligibilitySection).toContain(
+        "entry.outcome.value.review !== undefined",
+      );
+      expect(mergeEligibilitySection).toContain(
+        "entry.outcome.value.review.completionSignal !== undefined",
+      );
+      expect(mergeEligibilitySection).not.toContain(
+        "entry.outcome.value.review.commits.length > 0",
+      );
+      expect(mainTs).toContain("Skipped incomplete review");
+    });
+
     it("review-prompt.md contains {{BRANCH}} prompt argument", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner-with-review" });
