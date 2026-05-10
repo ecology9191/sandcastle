@@ -695,6 +695,8 @@ Removes the Podman image.
 | `signal`             | AbortSignal        | —                             | Cancel the run when aborted. Kills the in-flight agent subprocess and cancels lifecycle hooks; the worktree is preserved on disk. Rejects with `signal.reason`. |
 | `timeouts`           | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps. Currently supports `{ copyToWorktreeMs?: number }` (default: 60 000).                                   |
 
+OpenCode runs inside the sandbox container, so host `opencode login` state is not available there. Set `OPENCODE_API_KEY` in `.sandcastle/.env` or pass it via `opencode(model, { env: { OPENCODE_API_KEY } })`.
+
 ### `RunResult`
 
 | Field              | Type                | Description                                                        |

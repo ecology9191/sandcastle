@@ -1032,7 +1032,7 @@ describe("opencode factory", () => {
     ]);
   });
 
-  it("createStreamParser extracts nested error.data.message as a result", () => {
+  it("createStreamParser extracts nested error.data.message as an error", () => {
     const parser = createOpenCodeParser();
     expect(
       parser.parseStreamLine(
@@ -1041,7 +1041,7 @@ describe("opencode factory", () => {
           error: { data: { message: "OpenCode failed" } },
         }),
       ),
-    ).toEqual([{ type: "result", result: "OpenCode failed" }]);
+    ).toEqual([{ type: "error", error: "OpenCode failed" }]);
   });
 
   it("createStreamParser ignores malformed and non-JSON lines directly", () => {

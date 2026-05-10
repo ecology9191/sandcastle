@@ -1,6 +1,7 @@
 export type ParsedStreamEvent =
   | { type: "text"; text: string }
   | { type: "result"; result: string }
+  | { type: "error"; error: string }
   | { type: "tool_call"; name: string; args: string }
   | { type: "session_id"; sessionId: string };
 
@@ -442,7 +443,9 @@ const createOpenCodeStreamParser = (): AgentStreamParser => {
 
         case "error": {
           const message = extractErrorMessage(obj) ?? extractErrorMessage(part);
-          return message === undefined ? [] : emitResult(message);
+          return message === undefined
+            ? []
+            : [{ type: "error", error: message }];
         }
 
         default:

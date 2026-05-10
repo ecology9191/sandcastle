@@ -92,6 +92,7 @@ const invokeAgent = (
       provider.createStreamParser?.() ?? provider;
     let resultText: string | undefined;
     let sawResultEvent = false;
+    let errorText: string | undefined;
     let sessionId: string | undefined;
 
     // Deferred that will be failed when the idle timer fires
@@ -163,6 +164,9 @@ const invokeAgent = (
             resultText = parsed.result;
             sawResultEvent = true;
             return;
+          case "error":
+            errorText = parsed.error;
+            return;
           case "tool_call":
             onToolCall(parsed.name, parsed.args);
             return;
@@ -194,15 +198,14 @@ const invokeAgent = (
       }
 
       if (execResult.exitCode !== 0) {
-        // Prefer stderr; fall back to resultText (from parsed stream events),
-        // then to the tail of raw stdout (last 20 non-empty lines) for
-        // non-structured output.
+        // Prefer stderr; fall back to parsed error/result events, then to the
+        // tail of raw stdout (last 20 non-empty lines) for non-structured output.
         const hasStructuredOutput =
           provider.name === "opencode" &&
           hasStructuredOpenCodeOutput(execResult.stdout);
         let errorDetail = execResult.stderr;
         if (!errorDetail.trim()) {
-          errorDetail = resultText ?? "";
+          errorDetail = errorText ?? resultText ?? "";
         }
         if (!errorDetail.trim()) {
           if (hasStructuredOutput) {
@@ -216,6 +219,14 @@ const invokeAgent = (
         return yield* Effect.fail(
           new AgentError({
             message: `${provider.name} exited with code ${execResult.exitCode}:\n${errorDetail}`,
+          }),
+        );
+      }
+
+      if (errorText !== undefined) {
+        return yield* Effect.fail(
+          new AgentError({
+            message: `${provider.name} emitted an error:\n${errorText}`,
           }),
         );
       }

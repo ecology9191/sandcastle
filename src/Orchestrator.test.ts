@@ -3003,7 +3003,7 @@ describe("Orchestrator with opencode provider", () => {
     }
   });
 
-  it("returns parsed error events from successful opencode output", async () => {
+  it("fails on parsed error events from successful opencode output", async () => {
     const exit = await runOpenCodeOrchestrate({
       streamLines: [
         opencodeJsonLine({
@@ -3013,10 +3013,15 @@ describe("Orchestrator with opencode provider", () => {
       ],
     });
 
-    expect(exit._tag).toBe("Success");
-    if (exit._tag === "Success") {
-      expect(exit.value.stdout).toBe("parsed opencode error");
-      expect(exit.value.completionSignal).toBeUndefined();
+    expect(exit._tag).toBe("Failure");
+    if (exit._tag === "Failure") {
+      const err = Cause.squash(exit.cause);
+      expect(err).toBeInstanceOf(AgentError);
+      if (err instanceof AgentError) {
+        expect(err.message).toContain("opencode emitted an error:");
+        expect(err.message).toContain("parsed opencode error");
+        expect(err.message).not.toContain('"type":"error"');
+      }
     }
   });
 
