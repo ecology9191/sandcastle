@@ -222,6 +222,12 @@ console.log(result.commits); // array of { sha } for commits created
 console.log(result.branch); // target branch name
 ```
 
+### Terminal Output Mode
+
+By default, file logging writes durable run logs under `.sandcastle/logs/` and prints a `tail -f` hint. Set `SANDCASTLE_TERMINAL_OUTPUT=verbose` in `.sandcastle/.env` to keep those file logs and also mirror automated `run()` and reusable `sandbox.run()` progress to the terminal with prefixed lifecycle, hook, sync, merge, commit collection, and parsed agent stream output. Use `off` or omit the key for log-file-only behavior.
+
+Verbose terminal output is additive to log-to-file mode. It does not change `logging: { type: "stdout" }`, and `interactive()`, `sandbox.interactive()`, and `wt.interactive()` are excluded from the verbose renderer.
+
 ### `createSandbox()` — reusable sandbox
 
 Use `createSandbox()` when you need to run multiple agents (or multiple rounds of the same agent) inside a single sandbox. It creates the sandbox once, and you call `sandbox.run()` as many times as you need. This avoids repeated container startup costs and keeps all runs on the same branch.

@@ -344,6 +344,8 @@ describe("InitService scaffold", () => {
       );
       expect(envExample).toContain(expectedKey);
       expect(envExample).not.toContain(unexpectedKey);
+      expect(envExample).toContain("SANDCASTLE_TERMINAL_OUTPUT=");
+      expect(envExample).toContain("off|verbose");
       if (expectIssue191Link) {
         expect(envExample).toContain("issues/191");
       } else {

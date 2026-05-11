@@ -2,12 +2,17 @@ import { FileSystem } from "@effect/platform";
 import { Effect } from "effect";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
+import { TERMINAL_OUTPUT_ENV_KEY } from "./EnvResolver.js";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 
 const GITIGNORE = `.env
 logs/
 worktrees/
 `;
+
+const TERMINAL_OUTPUT_ENV_EXAMPLE = `# Optional terminal mirror for file-logged automated runs: off|verbose.
+# Leave blank/off for durable logs only; set verbose to also print prefixed lifecycle and agent stream output.
+${TERMINAL_OUTPUT_ENV_KEY}=`;
 
 export interface TemplateMetadata {
   name: string;
@@ -700,7 +705,7 @@ export const scaffold = (
     const templateDir = yield* getTemplateDir(templateName);
 
     // Build .env.example from agent + backlog manager env blocks
-    const envExampleParts = [agent.envExample];
+    const envExampleParts = [agent.envExample, TERMINAL_OUTPUT_ENV_EXAMPLE];
     if (backlogManager.envExample) {
       envExampleParts.push(backlogManager.envExample);
     }
