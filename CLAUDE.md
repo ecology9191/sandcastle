@@ -10,7 +10,7 @@ When changing public-facing behavior, check `README.md` to see if the documentat
 
 ### Issue tracker
 
-Issues live as GitHub issues in `mattpocock/sandcastle`. See `docs/agents/issue-tracker.md`.
+Issues and PRDs live in `.beads/` and are managed with the `bd` CLI. See `docs/agents/issue-tracker.md`.
 
 ### Triage labels
 
