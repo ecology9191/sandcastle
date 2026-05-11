@@ -1,5 +1,12 @@
 # @ecology91/sandcastle
 
+## 0.5.14
+
+### Patch Changes
+
+- 707ebce: Stop scaffolded backlog workers before planning or executing agent work when open `ready-for-human` HITL issues are present.
+- 99ed560: Add `SANDCASTLE_TERMINAL_OUTPUT=verbose` for automated `run()` and reusable `sandbox.run()` sessions so file-logged runs keep their durable log and also show prefixed sandbox lifecycle, hook, sync, merge, commit collection, and parsed agent stream output in the terminal. Document the mode in the README and scaffolded `.sandcastle/.env.example` files.
+
 ## 0.5.13
 
 ### Patch Changes
