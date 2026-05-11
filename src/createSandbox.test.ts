@@ -392,9 +392,14 @@ describe("createSandbox", () => {
       expect(log).toContain("Reusable run text.");
       expect(log).toContain("Bash(npm test)");
       expect(terminalOutput).toContain("tail -f");
+      expect(terminalOutput).toContain("[Implementer] Setting up sandbox");
       expect(terminalOutput).toContain("[Implementer] Agent started");
       expect(terminalOutput).toContain("[Implementer] Reusable run text.");
       expect(terminalOutput).toContain("[Implementer] Bash(npm test)");
+      expect(terminalOutput).toContain("[Implementer] Collecting commits");
+      expect(
+        terminalOutput.indexOf("[Implementer] Setting up sandbox"),
+      ).toBeLessThan(terminalOutput.indexOf("[Implementer] Agent started"));
     } finally {
       consoleSpy.mockRestore();
       await sandbox.close();
@@ -1029,6 +1034,48 @@ describe("createSandbox", () => {
       );
       expect(branch.trim()).toBe("test-isolated-commits");
     } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.run() renders isolated sync and commit lifecycle in verbose output", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    await writeSandcastleEnv(hostDir, "SANDCASTLE_TERMINAL_OUTPUT=verbose\n");
+
+    const provider = makeMockIsolatedProvider(async (cwd) => {
+      await writeFile(join(cwd, "isolated-sync.txt"), "synced");
+      await execAsync("git add isolated-sync.txt", { cwd });
+      await execAsync('git commit -m "isolated sync"', { cwd });
+      return "isolated done <promise>COMPLETE</promise>";
+    });
+    const sandbox = await createSandbox({
+      branch: "test-isolated-verbose-sync",
+      sandbox: provider,
+      cwd: hostDir,
+    });
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    try {
+      const result = await sandbox.run({
+        agent: testProvider,
+        prompt: "sync a commit",
+        maxIterations: 1,
+        name: "Isolated",
+      });
+      const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+      expect(result.commits.length).toBeGreaterThanOrEqual(1);
+      expect(terminalOutput).toContain("[Isolated] Setting up sandbox");
+      expect(terminalOutput).toContain("[Isolated] Syncing 1 commit to host");
+      expect(terminalOutput).toContain("[Isolated] Collecting commits");
+      expect(
+        terminalOutput.indexOf("[Isolated] Setting up sandbox"),
+      ).toBeLessThan(terminalOutput.indexOf("[Isolated] Agent started"));
+    } finally {
+      consoleSpy.mockRestore();
       await sandbox.close();
       await rm(hostDir, { recursive: true, force: true });
     }

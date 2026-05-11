@@ -960,8 +960,156 @@ describe("SANDCASTLE_TERMINAL_OUTPUT", () => {
     expect(log).toContain("Agent started");
     expect(terminalOutput).toContain("tail -f");
     expect(terminalOutput).toContain("[visible-run] Sandcastle Run");
+    expect(terminalOutput).toContain("[visible-run] Setting up sandbox");
     expect(terminalOutput).toContain("[visible-run] Agent started");
+    expect(terminalOutput).toContain("[visible-run] Collecting commits");
+    expect(
+      terminalOutput.indexOf("[visible-run] Setting up sandbox"),
+    ).toBeLessThan(terminalOutput.indexOf("[visible-run] Agent started"));
     expect(createCalls[0]).not.toHaveProperty("SANDCASTLE_TERMINAL_OUTPUT");
+  });
+
+  it("labels host and sandbox setup hooks in verbose output without changing the run log", async () => {
+    const harness = createTerminalOutputHarness(
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+    );
+
+    const result = await run({
+      agent: harness.agent,
+      sandbox: harness.sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "head" },
+      cwd: harness.dir,
+      name: "hook-run",
+      hooks: {
+        host: {
+          onSandboxReady: [{ command: "printf host > host-hook.txt" }],
+        },
+        sandbox: {
+          onSandboxReady: [{ command: "printf sandbox > sandbox-hook.txt" }],
+        },
+      },
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+    const log = readFileSync(result.logFilePath!, "utf-8");
+
+    expect(terminalOutput).toContain(
+      "[hook-run]   [host] printf host > host-hook.txt",
+    );
+    expect(terminalOutput).toContain(
+      "[hook-run]   [sandbox] printf sandbox > sandbox-hook.txt",
+    );
+    expect(log).toContain("[host] printf host > host-hook.txt");
+    expect(log).toContain("printf sandbox > sandbox-hook.txt");
+    expect(log).not.toContain("[sandbox] printf sandbox > sandbox-hook.txt");
+  });
+
+  it("renders merge-to-head lifecycle output in verbose output", async () => {
+    const dir = mkdtempSync(join(tmpdir(), "sandcastle-terminal-merge-"));
+    execSync("git init -b main", { cwd: dir, stdio: "ignore" });
+    execSync('git config user.email "test@test.com"', {
+      cwd: dir,
+      stdio: "ignore",
+    });
+    execSync('git config user.name "Test"', { cwd: dir, stdio: "ignore" });
+    writeFileSync(join(dir, "README.md"), "# Test\n");
+    execSync("git add README.md", { cwd: dir, stdio: "ignore" });
+    execSync('git commit -m "initial"', { cwd: dir, stdio: "ignore" });
+    mkdirSync(join(dir, ".sandcastle"), { recursive: true });
+    writeFileSync(
+      join(dir, ".sandcastle", ".env"),
+      "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
+    );
+
+    const gitTmpDir = mkdtempSync(join(tmpdir(), "test-gitconfig-"));
+    const sandboxEnv = {
+      ...process.env,
+      GIT_CONFIG_GLOBAL: join(gitTmpDir, ".gitconfig"),
+    };
+    writeFileSync(sandboxEnv.GIT_CONFIG_GLOBAL, "");
+    const streamLines = [
+      JSON.stringify({
+        type: "assistant",
+        message: {
+          content: [
+            {
+              type: "text",
+              text: "committed work <promise>COMPLETE</promise>",
+            },
+          ],
+        },
+      }),
+      JSON.stringify({
+        type: "result",
+        result: "committed work <promise>COMPLETE</promise>",
+      }),
+    ];
+    const sandbox = createBindMountSandboxProvider({
+      name: "merge-sandbox",
+      create: async (createOptions) => ({
+        worktreePath: createOptions.worktreePath,
+        exec: async (command, execOptions) => {
+          const cwd = execOptions?.cwd ?? createOptions.worktreePath;
+          if (command === "mock-agent") {
+            writeFileSync(join(cwd, "agent-commit.txt"), "committed\n");
+            execSync("git add agent-commit.txt", {
+              cwd,
+              env: sandboxEnv,
+              stdio: "ignore",
+            });
+            execSync('git commit -m "agent commit"', {
+              cwd,
+              env: sandboxEnv,
+              stdio: "ignore",
+            });
+            for (const line of streamLines) {
+              execOptions?.onLine?.(line);
+            }
+            return { stdout: streamLines.join("\n"), stderr: "", exitCode: 0 };
+          }
+          try {
+            const stdout = execSync(command, {
+              cwd,
+              env: sandboxEnv,
+              encoding: "utf-8",
+            });
+            if (execOptions?.onLine) {
+              for (const line of stdout.split("\n")) execOptions.onLine(line);
+            }
+            return { stdout, stderr: "", exitCode: 0 };
+          } catch (error) {
+            const failed = error as {
+              stdout?: Buffer | string;
+              stderr?: Buffer | string;
+              status?: number;
+              message?: string;
+            };
+            return {
+              stdout: String(failed.stdout ?? ""),
+              stderr: String(failed.stderr ?? failed.message ?? ""),
+              exitCode: failed.status ?? 1,
+            };
+          }
+        },
+        copyFileIn: async () => {},
+        copyFileOut: async () => {},
+        close: async () => {},
+      }),
+    });
+
+    const result = await run({
+      agent: terminalOutputAgent,
+      sandbox,
+      prompt: "do the work",
+      branchStrategy: { type: "merge-to-head" },
+      cwd: dir,
+      name: "merge-run",
+    });
+    const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+    expect(result.commits).toHaveLength(1);
+    expect(terminalOutput).toContain("[merge-run] Merging to main");
+    expect(terminalOutput).toContain("[merge-run] Collecting commits");
   });
 
   it("renders parsed Claude Code stream text and tool calls in verbose output", async () => {

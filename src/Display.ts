@@ -103,6 +103,16 @@ const makePrefixedTerminalDisplayService = (
   const renderer = options.renderer ?? makeConsoleTerminalRenderer();
   const write = (message: string): Effect.Effect<void> =>
     renderer.write(makePrefixedMessage(options.name, message));
+  const formatTaskLogMessage = (title: string, message: string): string => {
+    if (
+      title === "Setting up sandbox" &&
+      !message.startsWith("[host] ") &&
+      !message.startsWith("[sandbox] ")
+    ) {
+      return `[sandbox] ${message}`;
+    }
+    return message;
+  };
 
   return {
     intro: () => Effect.void,
@@ -133,7 +143,12 @@ const makePrefixedTerminalDisplayService = (
         yield* write(title);
         const result = yield* effect((msg) => {
           Effect.runPromise(
-            renderer.write(makePrefixedMessage(options.name, `  ${msg}`)),
+            renderer.write(
+              makePrefixedMessage(
+                options.name,
+                `  ${formatTaskLogMessage(title, msg)}`,
+              ),
+            ),
           ).catch(() => {});
         });
         yield* write(`${title} done`);
