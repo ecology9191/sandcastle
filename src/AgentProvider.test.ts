@@ -770,6 +770,29 @@ describe("opencode factory", () => {
     expect(command).not.toContain("--variant");
   });
 
+  it("buildPrintCommand ignores env-driven variant fallbacks", () => {
+    const originalSandcastleVariant = process.env.SANDCASTLE_OPENCODE_VARIANT;
+    const originalOpenCodeVariant = process.env.OPENCODE_VARIANT;
+    process.env.SANDCASTLE_OPENCODE_VARIANT = "provider/reasoning=max";
+    process.env.OPENCODE_VARIANT = "provider/high";
+    try {
+      const provider = opencode("opencode/big-pickle");
+      const { command } = provider.buildPrintCommand(opts("do something"));
+      expect(command).not.toContain("--variant");
+    } finally {
+      if (originalSandcastleVariant === undefined) {
+        delete process.env.SANDCASTLE_OPENCODE_VARIANT;
+      } else {
+        process.env.SANDCASTLE_OPENCODE_VARIANT = originalSandcastleVariant;
+      }
+      if (originalOpenCodeVariant === undefined) {
+        delete process.env.OPENCODE_VARIANT;
+      } else {
+        process.env.OPENCODE_VARIANT = originalOpenCodeVariant;
+      }
+    }
+  });
+
   it("buildPrintCommand shell-escapes free-form variant values", () => {
     const provider = opencode("model's", {
       variant: "provider/high's max",

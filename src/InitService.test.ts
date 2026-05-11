@@ -367,6 +367,21 @@ describe("InitService scaffold", () => {
     expect(envExample).toContain("GH_TOKEN=");
   });
 
+  it("does not scaffold env-driven OpenCode variant selection", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: opencodeAgent,
+      model: opencodeAgent.defaultModel,
+    });
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).not.toContain("OPENCODE_VARIANT=");
+    expect(envExample).not.toContain("SANDCASTLE_OPENCODE_VARIANT=");
+  });
+
   it("generates .env.example without GH_TOKEN when backlog manager is beads", async () => {
     const dir = await makeDir();
     await runScaffold(dir, {
