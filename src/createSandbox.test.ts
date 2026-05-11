@@ -1,12 +1,12 @@
 import { exec } from "node:child_process";
 import { existsSync, mkdtempSync, writeFileSync } from "node:fs";
-import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
 import { Effect, Layer } from "effect";
-import { describe, expect, it } from "vitest";
-import { claudeCode, pi } from "./AgentProvider.js";
+import { describe, expect, it, vi } from "vitest";
+import { claudeCode, pi, type AgentProvider } from "./AgentProvider.js";
 import { createSandbox, type CreateSandboxOptions } from "./createSandbox.js";
 import { Sandbox } from "./SandboxFactory.js";
 import {
@@ -62,6 +62,52 @@ const toStreamJson = (output: string): string => {
 
 const testProvider = claudeCode("test-model");
 const testPiProvider = pi("test-model");
+
+const terminalOutputAgent: AgentProvider = {
+  name: "test-agent",
+  env: {},
+  captureSessions: false,
+  buildPrintCommand: () => ({ command: "mock-agent" }),
+  parseStreamLine: (line) => {
+    const parsed = JSON.parse(line) as {
+      type?: string;
+      text?: string;
+      result?: string;
+      name?: string;
+      args?: string;
+    };
+    if (parsed.type === "text" && typeof parsed.text === "string") {
+      return [{ type: "text" as const, text: parsed.text }];
+    }
+    if (parsed.type === "result" && typeof parsed.result === "string") {
+      return [{ type: "result" as const, result: parsed.result }];
+    }
+    if (
+      parsed.type === "tool_call" &&
+      typeof parsed.name === "string" &&
+      typeof parsed.args === "string"
+    ) {
+      return [
+        { type: "tool_call" as const, name: parsed.name, args: parsed.args },
+      ];
+    }
+    return [];
+  },
+};
+
+const reusableRunStreamLines = [
+  JSON.stringify({ type: "text", text: "Reusable run text." }),
+  JSON.stringify({ type: "tool_call", name: "Bash", args: "npm test" }),
+  JSON.stringify({
+    type: "result",
+    result: "Reusable run result. <promise>COMPLETE</promise>",
+  }),
+];
+
+const writeSandcastleEnv = async (hostDir: string, content: string) => {
+  await mkdir(join(hostDir, ".sandcastle"), { recursive: true });
+  await writeFile(join(hostDir, ".sandcastle", ".env"), content);
+};
 
 /** Format a mock pi agent result as stream-json lines */
 const toPiStreamJson = (output: string): string => {
@@ -125,6 +171,37 @@ const makeMockAgentLayer = (
           const cwd = options?.cwd ?? sandboxDir;
           const output = yield* Effect.promise(() => mockAgentBehavior(cwd));
           return { stdout: output, stderr: "", exitCode: 0 };
+        });
+      }
+      return Effect.flatMap(Sandbox, (real) =>
+        real.exec(command, options),
+      ).pipe(Effect.provide(fsLayer));
+    },
+    copyIn: (hostPath, sandboxPath) =>
+      Effect.flatMap(Sandbox, (real) =>
+        real.copyIn(hostPath, sandboxPath),
+      ).pipe(Effect.provide(fsLayer)),
+    copyFileOut: (sandboxPath, hostPath) =>
+      Effect.flatMap(Sandbox, (real) =>
+        real.copyFileOut(sandboxPath, hostPath),
+      ).pipe(Effect.provide(fsLayer)),
+  });
+};
+
+const makeMockStreamLayer = (
+  sandboxDir: string,
+  streamLines: readonly string[],
+): Layer.Layer<Sandbox> => {
+  const fsLayer = makeLocalSandboxLayer(sandboxDir);
+
+  return Layer.succeed(Sandbox, {
+    exec: (command, options) => {
+      if (command === "mock-agent") {
+        return Effect.sync(() => {
+          for (const line of streamLines) {
+            options?.onLine?.(line);
+          }
+          return { stdout: streamLines.join("\n"), stderr: "", exitCode: 0 };
         });
       }
       return Effect.flatMap(Sandbox, (real) =>
@@ -233,6 +310,141 @@ describe("createSandbox", () => {
       expect(typeof result.stdout).toBe("string");
       expect(Array.isArray(result.commits)).toBe(true);
     } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.run() keeps file-only terminal behavior when verbose output is off", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const sandbox = await createSandbox({
+      branch: "test-run-terminal-off",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: {
+        buildSandboxLayer: (sandboxDir) =>
+          makeMockStreamLayer(sandboxDir, reusableRunStreamLines),
+      },
+    });
+
+    try {
+      const result = await sandbox.run({
+        agent: terminalOutputAgent,
+        prompt: "do something",
+        maxIterations: 1,
+        name: "DefaultOff",
+      });
+      const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+      const log = await readFile(result.logFilePath!, "utf-8");
+
+      expect(result.iterations.length).toBe(1);
+      expect(result.stdout).toBe(
+        "Reusable run result. <promise>COMPLETE</promise>",
+      );
+      expect(result.logFilePath).toBeDefined();
+      expect(log).toContain("Reusable run text.");
+      expect(log).toContain("Bash(npm test)");
+      expect(terminalOutput).toContain("tail -f");
+      expect(terminalOutput).not.toContain("[DefaultOff] Agent started");
+      expect(terminalOutput).not.toContain("[DefaultOff] Reusable run text.");
+    } finally {
+      consoleSpy.mockRestore();
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.run() renders verbose lifecycle and stream output while preserving the run log", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    await writeSandcastleEnv(hostDir, "SANDCASTLE_TERMINAL_OUTPUT=verbose\n");
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const sandbox = await createSandbox({
+      branch: "test-run-terminal-verbose",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: {
+        buildSandboxLayer: (sandboxDir) =>
+          makeMockStreamLayer(sandboxDir, reusableRunStreamLines),
+      },
+    });
+
+    try {
+      const result = await sandbox.run({
+        agent: terminalOutputAgent,
+        prompt: "do something",
+        maxIterations: 1,
+        name: "Implementer",
+      });
+      const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+      const log = await readFile(result.logFilePath!, "utf-8");
+
+      expect(result.iterations.length).toBe(1);
+      expect(result.stdout).toBe(
+        "Reusable run result. <promise>COMPLETE</promise>",
+      );
+      expect(log).toContain("Reusable run text.");
+      expect(log).toContain("Bash(npm test)");
+      expect(terminalOutput).toContain("tail -f");
+      expect(terminalOutput).toContain("[Implementer] Agent started");
+      expect(terminalOutput).toContain("[Implementer] Reusable run text.");
+      expect(terminalOutput).toContain("[Implementer] Bash(npm test)");
+    } finally {
+      consoleSpy.mockRestore();
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.run() prefixes concurrent verbose output with each run name", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    await writeSandcastleEnv(hostDir, "SANDCASTLE_TERMINAL_OUTPUT=verbose\n");
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const sandbox = await createSandbox({
+      branch: "test-run-terminal-concurrent",
+      sandbox: testSandbox,
+      cwd: hostDir,
+      _test: {
+        buildSandboxLayer: (sandboxDir) =>
+          makeMockStreamLayer(sandboxDir, reusableRunStreamLines),
+      },
+    });
+
+    try {
+      const [implementer, reviewer] = await Promise.all([
+        sandbox.run({
+          agent: terminalOutputAgent,
+          prompt: "implement",
+          maxIterations: 1,
+          name: "Implementer",
+        }),
+        sandbox.run({
+          agent: terminalOutputAgent,
+          prompt: "review",
+          maxIterations: 1,
+          name: "Reviewer",
+        }),
+      ]);
+      const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+      expect(implementer.iterations.length).toBe(1);
+      expect(reviewer.iterations.length).toBe(1);
+      expect(implementer.logFilePath).not.toBe(reviewer.logFilePath);
+      expect(terminalOutput).toContain("[Implementer] Reusable run text.");
+      expect(terminalOutput).toContain("[Reviewer] Reusable run text.");
+      expect(terminalOutput).toContain("[Implementer] Bash(npm test)");
+      expect(terminalOutput).toContain("[Reviewer] Bash(npm test)");
+    } finally {
+      consoleSpy.mockRestore();
       await sandbox.close();
       await rm(hostDir, { recursive: true, force: true });
     }
@@ -941,6 +1153,57 @@ describe("createSandbox", () => {
       expect(Array.isArray(result.commits)).toBe(true);
       expect(receivedArgs).toContain("do something interactively");
     } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.interactive() stays out of verbose file-log rendering", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+    await writeSandcastleEnv(hostDir, "SANDCASTLE_TERMINAL_OUTPUT=verbose\n");
+    const consoleSpy = vi.spyOn(console, "log").mockImplementation(() => {});
+
+    const interactiveProvider = createBindMountSandboxProvider({
+      name: "test-interactive-verbose",
+      create: async (opts) => ({
+        worktreePath: opts.worktreePath,
+        exec: async (cmd, execOpts) => {
+          const cwd = execOpts?.cwd ?? opts.worktreePath;
+          const result = await execAsync(cmd, { cwd });
+          return {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: 0,
+          };
+        },
+        interactiveExec: async () => ({ exitCode: 0 }),
+        copyFileIn: async () => {},
+        copyFileOut: async () => {},
+        close: async () => {},
+      }),
+    });
+
+    const sandbox = await createSandbox({
+      branch: "test-interactive-verbose",
+      sandbox: interactiveProvider,
+      cwd: hostDir,
+    });
+
+    try {
+      const result = await sandbox.interactive({
+        agent: testProvider,
+        prompt: "do something interactively",
+        name: "Interactive",
+      });
+      const terminalOutput = consoleSpy.mock.calls.flat().join("\n");
+
+      expect(result.exitCode).toBe(0);
+      expect(terminalOutput).not.toContain("tail -f");
+      expect(terminalOutput).not.toContain("[Interactive]");
+    } finally {
+      consoleSpy.mockRestore();
       await sandbox.close();
       await rm(hostDir, { recursive: true, force: true });
     }

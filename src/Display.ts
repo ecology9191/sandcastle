@@ -61,7 +61,28 @@ export interface DisplayService {
 
 export interface PrefixedTerminalDisplayOptions {
   readonly name?: string;
+  readonly renderer?: TerminalRenderer;
 }
+
+export interface TerminalRenderer {
+  readonly write: (message: string) => Effect.Effect<void>;
+}
+
+export const makeConsoleTerminalRenderer = (): TerminalRenderer => {
+  let writeQueue: Promise<void> = Promise.resolve();
+
+  return {
+    write: (message) =>
+      Effect.promise(() => {
+        const write = () => {
+          console.log(message);
+        };
+        const next = writeQueue.then(write, write);
+        writeQueue = next.catch(() => {});
+        return next;
+      }),
+  };
+};
 
 export class Display extends Context.Tag("Display")<
   Display,
@@ -79,8 +100,9 @@ const makePrefixedMessage = (
 const makePrefixedTerminalDisplayService = (
   options: PrefixedTerminalDisplayOptions,
 ): DisplayService => {
+  const renderer = options.renderer ?? makeConsoleTerminalRenderer();
   const write = (message: string): Effect.Effect<void> =>
-    Effect.sync(() => console.log(makePrefixedMessage(options.name, message)));
+    renderer.write(makePrefixedMessage(options.name, message));
 
   return {
     intro: () => Effect.void,
@@ -96,21 +118,23 @@ const makePrefixedTerminalDisplayService = (
       }),
 
     summary: (title, rows) =>
-      Effect.sync(() => {
+      Effect.gen(function* () {
         const lines = [
           makePrefixedMessage(options.name, title),
           ...Object.entries(rows).map(([key, value]) =>
             makePrefixedMessage(options.name, `  ${key}: ${value}`),
           ),
         ];
-        console.log(lines.join("\n"));
+        yield* renderer.write(lines.join("\n"));
       }),
 
     taskLog: (title, effect) =>
       Effect.gen(function* () {
         yield* write(title);
         const result = yield* effect((msg) => {
-          console.log(makePrefixedMessage(options.name, `  ${msg}`));
+          Effect.runPromise(
+            renderer.write(makePrefixedMessage(options.name, `  ${msg}`)),
+          ).catch(() => {});
         });
         yield* write(`${title} done`);
         return result;

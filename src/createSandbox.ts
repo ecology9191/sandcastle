@@ -5,11 +5,17 @@ import type { AgentProvider } from "./AgentProvider.js";
 import {
   ClackDisplay,
   Display,
+  FileAndTerminalDisplay,
   FileDisplay,
+  makeConsoleTerminalRenderer,
   SilentDisplay,
   type DisplayEntry,
 } from "./Display.js";
-import { resolveEnv } from "./EnvResolver.js";
+import {
+  resolveEnv,
+  resolveTerminalOutputMode,
+  stripHostSandcastleEnv,
+} from "./EnvResolver.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
 import { orchestrate, type IterationResult } from "./Orchestrator.js";
 import { defaultSessionPathsLayer } from "./SessionPaths.js";
@@ -210,6 +216,7 @@ const buildSandboxHandle = (
     providerHandle,
     applyToHost,
   } = ctx;
+  const terminalRenderer = makeConsoleTerminalRenderer();
 
   const sandboxHandle: Sandbox = {
     branch,
@@ -272,6 +279,10 @@ const buildSandboxHandle = (
           buildLogFilename(branch, undefined, runOptions.name),
         ),
       };
+      const resolvedEnv = await Effect.runPromise(
+        resolveEnv(hostRepoDir).pipe(Effect.provide(NodeContext.layer)),
+      );
+      const terminalOutputMode = resolveTerminalOutputMode(resolvedEnv);
 
       const runDisplayLayer =
         resolvedLogging.type === "file"
@@ -280,9 +291,15 @@ const buildSandboxHandle = (
                 logPath: resolvedLogging.path,
                 agentName: runOptions.name,
                 branch,
+                hostRepoDir,
               });
               return Layer.provide(
-                FileDisplay.layer(resolvedLogging.path),
+                terminalOutputMode === "verbose"
+                  ? FileAndTerminalDisplay.layer(resolvedLogging.path, {
+                      name: runOptions.name,
+                      renderer: terminalRenderer,
+                    })
+                  : FileDisplay.layer(resolvedLogging.path),
                 NodeFileSystem.layer,
               );
             })()
@@ -527,7 +544,12 @@ export const createSandboxFromWorktree = async (
     options.sandbox.tag !== "isolated"
   ) {
     await Effect.runPromise(
-      copyToWorktree(options.copyToWorktree, hostRepoDir, worktreePath, options.timeouts?.copyToWorktreeMs),
+      copyToWorktree(
+        options.copyToWorktree,
+        hostRepoDir,
+        worktreePath,
+        options.timeouts?.copyToWorktreeMs,
+      ),
     );
   }
 
@@ -548,7 +570,7 @@ export const createSandboxFromWorktree = async (
       resolveEnv(hostRepoDir).pipe(Effect.provide(NodeContext.layer)),
     );
     const env = mergeProviderEnv({
-      resolvedEnv,
+      resolvedEnv: stripHostSandcastleEnv(resolvedEnv),
       agentProviderEnv: {},
       sandboxProviderEnv: options.sandbox.env,
     });
@@ -681,7 +703,12 @@ export const createSandbox = async (
     options.sandbox.tag !== "isolated"
   ) {
     await Effect.runPromise(
-      copyToWorktree(options.copyToWorktree, hostRepoDir, worktreePath, options.timeouts?.copyToWorktreeMs),
+      copyToWorktree(
+        options.copyToWorktree,
+        hostRepoDir,
+        worktreePath,
+        options.timeouts?.copyToWorktreeMs,
+      ),
     );
   }
 
@@ -710,7 +737,7 @@ export const createSandbox = async (
       resolveEnv(hostRepoDir).pipe(Effect.provide(NodeContext.layer)),
     );
     const env = mergeProviderEnv({
-      resolvedEnv,
+      resolvedEnv: stripHostSandcastleEnv(resolvedEnv),
       agentProviderEnv: {},
       sandboxProviderEnv: options.sandbox.env,
     });
