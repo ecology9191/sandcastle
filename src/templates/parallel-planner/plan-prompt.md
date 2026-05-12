@@ -1,28 +1,18 @@
-# ISSUES
+# READY ISSUES
 
 Here are the claimable agent issues in the repo:
 
-<issues-json>
+<ready-issues-json>
 
-!`{{LIST_TASKS_COMMAND}}`
+!`{{PLANNER_LIST_TASKS_COMMAND}}`
 
-</issues-json>
+</ready-issues-json>
 
 The list above has already been filtered to issues ready for work.
 
 # TASK
 
-Analyze the open issues and build a dependency graph. For each issue, determine whether it **blocks** or **is blocked by** any other open issue.
-
-An issue B is **blocked by** issue A if:
-
-- B requires code or infrastructure that A introduces
-- B and A modify overlapping files or modules, making concurrent work likely to produce merge conflicts
-- B's requirements depend on a decision or API shape that A will establish
-
-An issue is **unblocked** if it has zero blocking dependencies on other open issues.
-
-For each unblocked issue, assign a branch name using the format `sandcastle/issue-{id}-{slug}`.
+{{PLANNER_TASK_INSTRUCTIONS}}
 
 # OUTPUT
 
@@ -32,4 +22,4 @@ Output your plan as a JSON object wrapped in `<plan>` tags:
 {"issues": [{"id": "bd-a1b2", "title": "Fix auth bug", "branch": "sandcastle/issue-bd-a1b2-fix-auth-bug"}]}
 </plan>
 
-Include only unblocked issues. If every issue is blocked, output an empty `issues` array. Never include blocked, deferred, or `ready-for-human` issues.
+If no ready issues are listed, return an empty `issues` array.

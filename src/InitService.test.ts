@@ -60,6 +60,8 @@ const workflowBacklogManager = (
   label: "Test backlog",
   templateArgs: {
     LIST_TASKS_COMMAND: "test list tasks",
+    PLANNER_LIST_TASKS_COMMAND: "test planner list tasks",
+    PLANNER_TASK_INSTRUCTIONS: "Return test planner issues unchanged.",
     VIEW_TASK_COMMAND: `${process.execPath} ${contextScriptPath} <ID>`,
     CLOSE_TASK_COMMAND: "test close <ID>",
     HUMAN_GATES_COMMAND: `${process.execPath} ${humanGatesScriptPath}`,
@@ -581,7 +583,9 @@ describe("InitService scaffold", () => {
     // When scaffolded with default model, simple-loop uses claude-opus-4-6
     // (rewritten from template's claude-sonnet-4-6)
     expect(mainTs).toContain("promptFile");
-    expect(mainTs).toContain("npm install");
+    expect(mainTs).toContain(
+      "npm install --prefer-offline --no-audit --no-fund",
+    );
     expect(mainTs).toContain("onSandboxReady");
   });
 
@@ -711,7 +715,7 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("@.sandcastle/CODING_STANDARDS.md");
     });
 
-    it("review-prompt.md uses {{SOURCE_BRANCH}} instead of hardcoded main", async () => {
+    it("review-prompt.md compares target branch to HEAD instead of hardcoded main", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "sequential-reviewer" });
 
@@ -719,8 +723,8 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "review-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("git diff {{SOURCE_BRANCH}}...{{BRANCH}}");
-      expect(prompt).toContain("git log {{SOURCE_BRANCH}}..{{BRANCH}}");
+      expect(prompt).toContain("git diff {{TARGET_BRANCH}}...HEAD");
+      expect(prompt).toContain("git log {{TARGET_BRANCH}}..HEAD");
       expect(prompt).not.toContain("git diff main");
       expect(prompt).not.toContain("git log main");
     });
@@ -1176,7 +1180,9 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.mts"),
         "utf-8",
       );
-      expect(mainTs).toContain("npm install");
+      expect(mainTs).toContain(
+        "npm install --prefer-offline --no-audit --no-fund",
+      );
       expect(mainTs).toContain("sandcastle");
     });
 
@@ -1643,7 +1649,7 @@ describe("InitService scaffold", () => {
       expect(prompt).toContain("@.sandcastle/CODING_STANDARDS.md");
     });
 
-    it("review-prompt.md uses {{SOURCE_BRANCH}} instead of hardcoded main", async () => {
+    it("review-prompt.md compares target branch to HEAD instead of hardcoded main", async () => {
       const dir = await makeDir();
       await runScaffold(dir, { templateName: "parallel-planner-with-review" });
 
@@ -1651,8 +1657,8 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "review-prompt.md"),
         "utf-8",
       );
-      expect(prompt).toContain("git diff {{SOURCE_BRANCH}}...{{BRANCH}}");
-      expect(prompt).toContain("git log {{SOURCE_BRANCH}}..{{BRANCH}}");
+      expect(prompt).toContain("git diff {{TARGET_BRANCH}}...HEAD");
+      expect(prompt).toContain("git log {{TARGET_BRANCH}}..HEAD");
       expect(prompt).not.toContain("git diff main");
       expect(prompt).not.toContain("git log main");
     });
@@ -1696,6 +1702,18 @@ describe("InitService scaffold", () => {
       expect(manager).toBeDefined();
       expect(manager!.label).toBe("Beads");
       expect(manager!.templateArgs.LIST_TASKS_COMMAND).toBe("bd ready --json");
+      expect(manager!.templateArgs.PLANNER_LIST_TASKS_COMMAND).toContain(
+        "bd ready --json --limit",
+      );
+      expect(manager!.templateArgs.PLANNER_LIST_TASKS_COMMAND).toContain(
+        "SANDCASTLE_READY_LIMIT",
+      );
+      expect(manager!.templateArgs.PLANNER_LIST_TASKS_COMMAND).toContain(
+        "node -e",
+      );
+      expect(manager!.templateArgs.PLANNER_TASK_INSTRUCTIONS).toContain(
+        "Return those issues unchanged",
+      );
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toBe(BEADS_VIEW_COMMAND);
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("bd show");
       expect(manager!.templateArgs.VIEW_TASK_COMMAND).toContain("bd comments");
@@ -1926,8 +1944,12 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(planPrompt).toContain("bd ready --json");
-      expect(planPrompt).toContain("output an empty `issues` array");
-      expect(planPrompt).toContain("ready-for-human");
+      expect(planPrompt).toContain("SANDCASTLE_READY_LIMIT");
+      expect(planPrompt).toContain("node -e");
+      expect(planPrompt).toContain("return an empty `issues` array");
+      expect(planPrompt).toContain("Return those issues unchanged");
+      expect(planPrompt).not.toContain("ready-for-human");
+      expect(planPrompt).not.toContain("build a dependency graph");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
     });
@@ -2099,8 +2121,12 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(planPrompt).toContain("bd ready --json");
-      expect(planPrompt).toContain("output an empty `issues` array");
-      expect(planPrompt).toContain("ready-for-human");
+      expect(planPrompt).toContain("SANDCASTLE_READY_LIMIT");
+      expect(planPrompt).toContain("node -e");
+      expect(planPrompt).toContain("return an empty `issues` array");
+      expect(planPrompt).toContain("Return those issues unchanged");
+      expect(planPrompt).not.toContain("ready-for-human");
+      expect(planPrompt).not.toContain("build a dependency graph");
       expect(planPrompt).not.toContain("gh issue");
       expect(planPrompt).not.toContain("{{LIST_TASKS_COMMAND}}");
     });

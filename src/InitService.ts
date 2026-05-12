@@ -68,6 +68,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -99,6 +100,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -128,6 +130,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -157,6 +160,7 @@ RUN apt-get update && apt-get install -y \\
   git \\
   curl \\
   jq \\
+  ripgrep \\
   && rm -rf /var/lib/apt/lists/*
 
 {{BACKLOG_MANAGER_TOOLS}}
@@ -237,6 +241,8 @@ export interface BacklogManagerEntry {
   readonly label: string;
   readonly templateArgs: {
     readonly LIST_TASKS_COMMAND: string;
+    readonly PLANNER_LIST_TASKS_COMMAND: string;
+    readonly PLANNER_TASK_INSTRUCTIONS: string;
     readonly VIEW_TASK_COMMAND: string;
     readonly CLOSE_TASK_COMMAND: string;
     readonly HUMAN_GATES_COMMAND: string;
@@ -268,12 +274,31 @@ RUN curl -fsSL https://raw.githubusercontent.com/steveyegge/beads/main/scripts/i
 
 RUN corepack enable`;
 
+const GITHUB_PLANNER_TASK_INSTRUCTIONS = `Analyze the open issues and build a dependency graph. For each issue, determine whether it **blocks** or **is blocked by** any other open issue.
+
+An issue B is **blocked by** issue A if:
+
+- B requires code or infrastructure that A introduces
+- B and A modify overlapping files or modules, making concurrent work likely to produce merge conflicts
+- B's requirements depend on a decision or API shape that A will establish
+
+An issue is **unblocked** if it has zero blocking dependencies on other open issues.
+
+For each unblocked issue, assign a branch name using the format \`sandcastle/issue-{id}-{slug}\`.`;
+
+const BEADS_PLANNER_LIST_TASKS_COMMAND = `bd ready --json --limit \${SANDCASTLE_READY_LIMIT:-4} | node -e 'const fs=require("fs");const data=JSON.parse(fs.readFileSync(0,"utf8"));const arr=Array.isArray(data)?data:(data.issues||[]);const slug=s=>String(s||"").toLowerCase().replace(/[^a-z0-9]+/g,"-").replace(/^-+|-+$/g,"").slice(0,48);process.stdout.write(JSON.stringify(arr.map(i=>({id:i.id,title:i.title,branch:"sandcastle/issue-"+i.id+"-"+slug(i.title)}))))'`;
+
+const BEADS_PLANNER_TASK_INSTRUCTIONS =
+  "The JSON above is from `bd ready`, so each issue is already unblocked and ordered by Beads priority. Return those issues unchanged as the execution plan. Do not add issues, remove issues, or infer extra dependencies.";
+
 const BACKLOG_MANAGER_REGISTRY: BacklogManagerEntry[] = [
   {
     name: "github-issues",
     label: "GitHub Issues",
     templateArgs: {
       LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
+      PLANNER_LIST_TASKS_COMMAND: `gh issue list --state open --label Sandcastle --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'`,
+      PLANNER_TASK_INSTRUCTIONS: GITHUB_PLANNER_TASK_INSTRUCTIONS,
       VIEW_TASK_COMMAND: "gh issue view <ID>",
       CLOSE_TASK_COMMAND: `gh issue close <ID> --comment "Completed by Sandcastle"`,
       HUMAN_GATES_COMMAND:
@@ -288,6 +313,8 @@ GH_TOKEN=`,
     label: "Beads",
     templateArgs: {
       LIST_TASKS_COMMAND: "bd ready --json",
+      PLANNER_LIST_TASKS_COMMAND: BEADS_PLANNER_LIST_TASKS_COMMAND,
+      PLANNER_TASK_INSTRUCTIONS: BEADS_PLANNER_TASK_INSTRUCTIONS,
       VIEW_TASK_COMMAND: "bd show <ID> --json && bd comments <ID> --json",
       CLOSE_TASK_COMMAND: `bd close <ID> --reason "Completed by Sandcastle" --json`,
       HUMAN_GATES_COMMAND:
@@ -383,7 +410,7 @@ export function getNextStepsLines(
       `${step++}. Set the required env vars in .sandcastle/.env (see .sandcastle/.env.example)`,
       "   If you want to use your Claude subscription instead of an API key, see https://github.com/mattpocock/sandcastle/issues/191",
       `${step++}. Add "sandcastle": "npx tsx .sandcastle/${mainFilename}" to your package.json scripts`,
-      `${step++}. Templates use \`copyToWorktree: ["node_modules"]\` to copy your host node_modules into the sandbox for fast startup — the \`npm install\` in the onSandboxReady hook is a safety net for platform-specific binaries. Adjust both if you use a different package manager`,
+      `${step++}. Templates use \`copyToWorktree: ["node_modules"]\` to copy your host node_modules into the sandbox for fast startup — the guarded \`onSandboxReady\` hook runs \`npm install --prefer-offline --no-audit --no-fund\` only when dependencies are missing or invalid. Adjust both if you use a different package manager`,
       `${step++}. Read and customize the prompt files in .sandcastle/ — they shape what the agent does`,
     ];
     if (hasReviewer) {

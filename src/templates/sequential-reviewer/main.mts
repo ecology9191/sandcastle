@@ -32,14 +32,16 @@ const exec = promisify(execCallback);
 const MAX_ITERATIONS = 10;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
-// npm install ensures the sandbox always has fresh dependencies.
+// Reuse copied dependencies and install only when the package tree is missing or invalid.
+const installDependenciesCommand =
+  "test -d node_modules && npm ls --depth=0 >/dev/null 2>&1 || npm install --prefer-offline --no-audit --no-fund";
+
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "npm install" }] },
+  sandbox: { onSandboxReady: [{ command: installDependenciesCommand }] },
 };
 
 // Copy node_modules from the host into the worktree before each sandbox
-// starts. Avoids a full npm install from scratch; the hook above handles
-// platform-specific binaries and any packages added since the last copy.
+// starts. The hook above repairs the copied tree only when needed.
 const copyToWorktree = ["node_modules"];
 
 const humanGateCommand = "{{HUMAN_GATES_COMMAND}}";
