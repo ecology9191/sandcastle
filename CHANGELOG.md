@@ -1,5 +1,14 @@
 # @ecology91/sandcastle
 
+## 0.5.16
+
+### Patch Changes
+
+- 94c0af5: Let `sandcastle init` safely refresh existing `.sandcastle` directories by updating generated orchestration and `.env.example` files while preserving customized prompts, sandbox provider files, and runtime work artifacts.
+- 7ed3580: Reduce default Sandcastle template setup and prompt waste by guarding dependency installs, adding ripgrep to generated agent images, fixing reviewer diffs to compare against HEAD, compacting Beads planner input, and running merge verification once after all branches are merged.
+- 3e06527: Send OpenCode print-run prompts through stdin instead of argv so large prompts and OpenCode backends that require stdin prompt transport work reliably.
+- 9d52c87: Harden generated Sandcastle workflows so human-gate checks ignore non-HITL ready work and only stop when returned issues carry the `ready-for-human` label.
+
 ## 0.5.14
 
 ### Patch Changes
