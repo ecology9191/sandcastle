@@ -2,21 +2,21 @@
 
 Fix issue {{TASK_ID}}: {{ISSUE_TITLE}}
 
-Pull in the issue using `bd show <ID> --json && bd comments <ID> --json`. If it has a parent PRD, pull that in too.
+Use the authoritative task context below. It was loaded from Beads before launch.
+
+<task-context>
+
+{{TASK_CONTEXT}}
+
+</task-context>
 
 Only work on the issue specified.
 
-Work on branch {{BRANCH}}. Make commits and run tests.
+Work on branch {{BRANCH}}. Make commits after completing the verification step below.
 
 # CONTEXT
 
-Here are the last 10 commits:
-
-<recent-commits>
-
-!`git log -n 10 --format="%H%n%ad%n%B---" --date=short`
-
-</recent-commits>
+Do not preload commit history. If commit style is needed, run `git log --oneline -3` and summarize only the relevant pattern.
 
 # EXPLORATION
 
@@ -26,12 +26,7 @@ Pay extra attention to test files that touch the relevant parts of the code.
 
 # EXECUTION
 
-If applicable, use RGR to complete the task.
-
-1. RED: write one test
-2. GREEN: write the implementation to pass that test
-3. REPEAT until done
-4. REFACTOR the code
+Use red-green-refactor when applicable: write one failing test, implement the smallest passing change, repeat until done, then refactor.
 
 # FEEDBACK LOOPS
 
@@ -39,15 +34,9 @@ Before committing, run `npm run typecheck` and `npm run test` to ensure the test
 
 # COMMIT
 
-Make a git commit. The commit message must:
+Make one git commit. Use a concise `RALPH:` subject that includes the task ID and outcome.
 
-1. Start with `RALPH:` prefix
-2. Include task completed + PRD reference
-3. Key decisions made
-4. Files changed
-5. Blockers or notes for next iteration
-
-Keep it concise.
+Commit body is optional. If useful, keep it to at most 3 bullets: why, key decision, validation.
 
 # THE ISSUE
 

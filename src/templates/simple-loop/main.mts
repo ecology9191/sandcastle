@@ -17,7 +17,18 @@ type HumanGateIssue = {
   title?: string;
   status?: string;
   defer_until?: string;
+  labels?: ({ name?: string } | string)[];
 };
+
+const hasHumanGateLabel = (issue: HumanGateIssue): boolean =>
+  issue.labels?.some((label) => {
+    const name = typeof label === "string" ? label : label.name;
+
+    return name === "ready-for-human";
+  }) ?? false;
+
+const filterHumanGateIssues = (issues: HumanGateIssue[]): HumanGateIssue[] =>
+  issues.filter(hasHumanGateLabel);
 
 const listHumanGateIssues = async (): Promise<HumanGateIssue[]> => {
   const { stdout } = await exec(humanGateCommand, {
@@ -35,7 +46,7 @@ const listHumanGateIssues = async (): Promise<HumanGateIssue[]> => {
     throw new Error("Human gate command must return a JSON array");
   }
 
-  return parsed as HumanGateIssue[];
+  return filterHumanGateIssues(parsed as HumanGateIssue[]);
 };
 
 const formatHumanGateIssue = (issue: HumanGateIssue): string => {
@@ -59,7 +70,7 @@ const stopIfHumanGateOpen = async (): Promise<void> => {
   }
 
   console.error(
-    "Human input required. Sandcastle will not plan or run agent work while HITL issues are open or deferred:",
+    "Human input required. Sandcastle will not plan or run agent work while HITL issues are ready:",
   );
 
   for (const issue of humanGateIssues) {

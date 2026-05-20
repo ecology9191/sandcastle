@@ -74,7 +74,7 @@ const writeWorkflowHarness = async (
   repoDir: string,
   options?: {
     contextOutput?: "value" | "empty";
-    humanGateOutput?: "empty" | "present";
+    humanGateOutput?: "empty" | "present" | "non-human";
   },
 ) => {
   const callsPath = join(repoDir, "calls.json");
@@ -108,7 +108,9 @@ calls.push({ type: "human-gates" });
 writeFileSync(callsPath, JSON.stringify(calls));
 
 if (process.env.SANDCASTLE_TEST_HUMAN_GATES === "present") {
-  console.log(JSON.stringify([{ id: "TASK-HITL", title: "Approve shell", status: "deferred", defer_until: "2099-01-01T00:00:00Z" }]));
+  console.log(JSON.stringify([{ id: "TASK-HITL", title: "Approve shell", status: "deferred", defer_until: "2099-01-01T00:00:00Z", labels: ["ready-for-human"] }]));
+} else if (process.env.SANDCASTLE_TEST_HUMAN_GATES === "non-human") {
+  console.log(JSON.stringify([{ id: "TASK-AGENT", title: "Agent work", labels: ["ready-for-agent"] }]));
 } else {
   console.log("[]");
 }
@@ -1057,31 +1059,85 @@ describe("InitService scaffold", () => {
     },
   );
 
-  it.each(["parallel-planner", "parallel-planner-with-review"])(
-    "%s stops before planning when human gate is open",
-    async (templateName) => {
+  it.each([
+    "simple-loop",
+    "sequential-reviewer",
+    "parallel-planner",
+    "parallel-planner-with-review",
+  ])("%s stops before work when human gate is open", async (templateName) => {
+    const dir = await makeDir();
+    const harness = await writeWorkflowHarness(dir, {
+      humanGateOutput: "present",
+    });
+    await runScaffold(dir, {
+      templateName,
+      backlogManager: workflowBacklogManager(
+        harness.contextScriptPath,
+        harness.humanGatesScriptPath,
+      ),
+    });
+
+    await expect(runGeneratedWorkflow(dir, harness)).rejects.toMatchObject({
+      code: 1,
+      stderr: expect.stringContaining("TASK-HITL"),
+    });
+
+    const calls = await readWorkflowCalls(harness.callsPath);
+    expect(calls).toContainEqual({ type: "human-gates" });
+    expect(calls.some((call) => call.type === "run")).toBe(false);
+    expect(calls.some((call) => call.type === "task-context")).toBe(false);
+    expect(calls.some((call) => call.type === "createSandbox")).toBe(false);
+  });
+
+  it.each([
+    {
+      templateName: "simple-loop",
+      expectedRunName: "worker",
+      expectsTaskContext: false,
+    },
+    {
+      templateName: "sequential-reviewer",
+      expectedRunName: "implementer",
+      expectsTaskContext: false,
+    },
+    {
+      templateName: "parallel-planner",
+      expectedRunName: "planner",
+      expectsTaskContext: true,
+    },
+    {
+      templateName: "parallel-planner-with-review",
+      expectedRunName: "planner",
+      expectsTaskContext: true,
+    },
+  ])(
+    "$templateName ignores ready issues without the human-gate label",
+    async (templateCase) => {
       const dir = await makeDir();
       const harness = await writeWorkflowHarness(dir, {
-        humanGateOutput: "present",
+        humanGateOutput: "non-human",
       });
       await runScaffold(dir, {
-        templateName,
+        templateName: templateCase.templateName,
         backlogManager: workflowBacklogManager(
           harness.contextScriptPath,
           harness.humanGatesScriptPath,
         ),
       });
 
-      await expect(runGeneratedWorkflow(dir, harness)).rejects.toMatchObject({
-        code: 1,
-        stderr: expect.stringContaining("TASK-HITL"),
-      });
+      await runGeneratedWorkflow(dir, harness);
 
       const calls = await readWorkflowCalls(harness.callsPath);
       expect(calls).toContainEqual({ type: "human-gates" });
-      expect(calls.some((call) => call.type === "run")).toBe(false);
-      expect(calls.some((call) => call.type === "task-context")).toBe(false);
-      expect(calls.some((call) => call.type === "createSandbox")).toBe(false);
+      expect(
+        calls.some(
+          (call) =>
+            call.type === "run" && call.name === templateCase.expectedRunName,
+        ),
+      ).toBe(true);
+      expect(calls.some((call) => call.type === "task-context")).toBe(
+        templateCase.expectsTaskContext,
+      );
     },
   );
 
@@ -1146,6 +1202,8 @@ describe("InitService scaffold", () => {
 
     const main = await readFile(join(dir, ".sandcastle", "main.mts"), "utf-8");
     expect(main).toContain("stopIfHumanGateOpen");
+    expect(main).toContain("filterHumanGateIssues");
+    expect(main).toContain("ready-for-human");
     expect(main).toContain("bd list --label ready-for-human");
     expect(main).not.toContain("{{HUMAN_GATES_COMMAND}}");
   });

@@ -21,8 +21,12 @@
 // Or add to package.json:
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.ts" }
 
+import { exec as execCallback } from "node:child_process";
+import { promisify } from "node:util";
 import * as sandcastle from "@ecology91/sandcastle";
 import { podman } from "@ecology91/sandcastle/sandboxes/podman";
+
+const exec = promisify(execCallback);
 
 // ---------------------------------------------------------------------------
 // Configuration
@@ -33,15 +37,116 @@ import { podman } from "@ecology91/sandcastle/sandboxes/podman";
 const MAX_ITERATIONS = 10;
 
 // Hooks run inside the sandbox before the agent starts each iteration.
-// npm install ensures the sandbox always has fresh dependencies.
+// Reuse copied dependencies and install only when the package tree is missing or invalid.
+const installDependenciesCommand =
+  "test -d node_modules && npm ls --depth=0 >/dev/null 2>&1 || npm install --prefer-offline --no-audit --no-fund";
+
 const hooks = {
-  sandbox: { onSandboxReady: [{ command: "npm install" }] },
+  sandbox: { onSandboxReady: [{ command: installDependenciesCommand }] },
 };
 
 // Copy node_modules from the host into the worktree before each sandbox
-// starts. Avoids a full npm install from scratch; the hook above handles
-// platform-specific binaries and any packages added since the last copy.
+// starts. The hook above repairs the copied tree only when needed.
 const copyToWorktree = ["node_modules"];
+
+const taskContextCommandTemplate =
+  "bd show <ID> --json && bd comments <ID> --json";
+const taskContextMaxBuffer = 10 * 1024 * 1024;
+const humanGateCommand = "bd ready --json";
+const humanGateMaxBuffer = 10 * 1024 * 1024;
+
+type HumanGateIssue = {
+  id?: string;
+  number?: number;
+  title?: string;
+  status?: string;
+  defer_until?: string;
+  labels?: ({ name?: string } | string)[];
+};
+
+const hasHumanGateLabel = (issue: HumanGateIssue): boolean =>
+  issue.labels?.some((label) => {
+    const name = typeof label === "string" ? label : label.name;
+
+    return name === "ready-for-human";
+  }) ?? false;
+
+const filterHumanGateIssues = (issues: HumanGateIssue[]): HumanGateIssue[] =>
+  issues.filter(hasHumanGateLabel);
+
+const shellQuote = (value: string): string =>
+  "'" + value.replace(/'/g, "'\\''") + "'";
+
+const loadTaskContext = async (taskId: string): Promise<string> => {
+  const command = taskContextCommandTemplate.replace(
+    /<ID>/g,
+    shellQuote(taskId),
+  );
+
+  try {
+    const { stdout } = await exec(command, { maxBuffer: taskContextMaxBuffer });
+    const taskContext = stdout.trim();
+
+    if (!taskContext) {
+      throw new Error("Task context command produced no output");
+    }
+
+    return taskContext;
+  } catch (error) {
+    const message = error instanceof Error ? error.message : String(error);
+    throw new Error(`Failed to load task context for ${taskId}: ${message}`);
+  }
+};
+
+const listHumanGateIssues = async (): Promise<HumanGateIssue[]> => {
+  const { stdout } = await exec(humanGateCommand, {
+    maxBuffer: humanGateMaxBuffer,
+  });
+  const trimmed = stdout.trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  const parsed = JSON.parse(trimmed) as unknown;
+
+  if (!Array.isArray(parsed)) {
+    throw new Error("Human gate command must return a JSON array");
+  }
+
+  return filterHumanGateIssues(parsed as HumanGateIssue[]);
+};
+
+const formatHumanGateIssue = (issue: HumanGateIssue): string => {
+  const id =
+    issue.id ??
+    (issue.number === undefined ? "unknown issue" : `#${issue.number}`);
+  const title = issue.title ?? "(untitled)";
+  const deferUntil = issue.defer_until
+    ? `, deferred until ${issue.defer_until}`
+    : "";
+  const status = issue.status ? ` (${issue.status}${deferUntil})` : "";
+
+  return `${id}: ${title}${status}`;
+};
+
+const stopIfHumanGateOpen = async (): Promise<void> => {
+  const humanGateIssues = await listHumanGateIssues();
+
+  if (humanGateIssues.length === 0) {
+    return;
+  }
+
+  console.error(
+    "Human input required. Sandcastle will not plan or run agent work while HITL issues are ready:",
+  );
+
+  for (const issue of humanGateIssues) {
+    console.error(`  ${formatHumanGateIssue(issue)}`);
+  }
+
+  process.exit(1);
+};
 
 // ---------------------------------------------------------------------------
 // Main loop
@@ -49,6 +154,7 @@ const copyToWorktree = ["node_modules"];
 
 for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   console.log(`\n=== Iteration ${iteration}/${MAX_ITERATIONS} ===\n`);
+  await stopIfHumanGateOpen();
 
   // -------------------------------------------------------------------------
   // Phase 1: Plan
@@ -100,15 +206,19 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 2: Execute + Review
   //
-  // For each issue, create a sandbox via createSandbox() so the implementer
-  // and reviewer share the same sandbox instance per branch. The implementer
-  // runs first; if it produces commits, the reviewer runs in the same sandbox.
+  // For each issue, load deterministic task context before creating a sandbox.
+  // Missing or empty context rejects only that issue before agent launch. Then
+  // createSandbox() lets the implementer and reviewer share the same sandbox
+  // instance per branch. The implementer runs first; if it produces commits
+  // and a completion signal, the reviewer runs in the same sandbox.
   //
   // Promise.allSettled means one failing pipeline doesn't cancel the others.
   // -------------------------------------------------------------------------
 
   const settled = await Promise.allSettled(
     issues.map(async (issue) => {
+      const taskContext = await loadTaskContext(issue.id);
+
       const sandbox = await sandcastle.createSandbox({
         branch: issue.branch,
         sandbox: podman(),
@@ -127,11 +237,15 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             TASK_ID: issue.id,
             ISSUE_TITLE: issue.title,
             BRANCH: issue.branch,
+            TASK_CONTEXT: taskContext,
           },
         });
 
-        // Only review if the implementer produced commits
-        if (implement.commits.length > 0) {
+        // Only review completed implementer branches with commits.
+        if (
+          implement.commits.length > 0 &&
+          implement.completionSignal !== undefined
+        ) {
           const review = await sandbox.run({
             name: "reviewer",
             maxIterations: 1,
@@ -142,15 +256,30 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
             },
           });
 
-          // Merge commits from both runs so the merge phase sees all of them.
-          // Each sandbox.run() only returns commits from its own run.
+          // Keep both run results so implementer and reviewer completion evidence
+          // cannot obscure each other during merge eligibility checks.
           return {
-            ...review,
+            implement,
+            review,
             commits: [...implement.commits, ...review.commits],
           };
         }
 
-        return implement;
+        if (implement.commits.length > 0) {
+          console.warn(
+            `  ! Skipped incomplete branch ${issue.branch}: implementer commits present but completion signal missing.`,
+          );
+        } else if (implement.completionSignal !== undefined) {
+          console.log(
+            `  - ${issue.branch} implementer completed but produced no commits; skipping review and merge.`,
+          );
+        }
+
+        return {
+          implement,
+          review: undefined,
+          commits: implement.commits,
+        };
       } finally {
         await sandbox.close();
       }
@@ -166,29 +295,54 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     }
   }
 
-  // Only pass branches that actually produced commits to the merge phase.
-  // An agent that ran successfully but made no commits has nothing to merge.
+  for (const [i, outcome] of settled.entries()) {
+    if (outcome.status !== "fulfilled") {
+      continue;
+    }
+
+    const issue = issues[i]!;
+    const run = outcome.value;
+
+    if (
+      run.implement.completionSignal !== undefined &&
+      run.implement.commits.length > 0 &&
+      run.review !== undefined &&
+      run.review.completionSignal === undefined
+    ) {
+      console.warn(
+        `  ! Skipped incomplete review for ${issue.branch}: reviewer completion signal missing.`,
+      );
+    }
+  }
+
+  // Only pass branches with completed implementer and reviewer evidence to the
+  // merge phase. Merge eligibility is conservative: implementer commits plus
+  // implementer and reviewer completion signals are required. A completed
+  // reviewer can approve without making new commits.
   const completedIssues = settled
     .map((outcome, i) => ({ outcome, issue: issues[i]! }))
     .filter(
       (entry) =>
         entry.outcome.status === "fulfilled" &&
-        entry.outcome.value.commits.length > 0,
+        entry.outcome.value.implement.completionSignal !== undefined &&
+        entry.outcome.value.implement.commits.length > 0 &&
+        entry.outcome.value.review !== undefined &&
+        entry.outcome.value.review.completionSignal !== undefined,
     )
     .map((entry) => entry.issue);
 
   const completedBranches = completedIssues.map((i) => i.branch);
 
   console.log(
-    `\nExecution complete. ${completedBranches.length} branch(es) with commits:`,
+    `\nExecution complete. ${completedBranches.length} merge-eligible branch(es):`,
   );
   for (const branch of completedBranches) {
     console.log(`  ${branch}`);
   }
 
   if (completedBranches.length === 0) {
-    // All agents ran but none made commits — nothing to merge this cycle.
-    console.log("No commits produced. Nothing to merge.");
+    // All agents ran but none completed both implementation and review.
+    console.log("No merge-eligible branches. Nothing to merge.");
     continue;
   }
 
