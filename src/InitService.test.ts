@@ -16,6 +16,7 @@ import {
   getBacklogManager,
   listSandboxProviders,
   getSandboxProvider,
+  listExistingPromptFiles,
 } from "./InitService.js";
 import type { AgentEntry, ScaffoldOptions } from "./InitService.js";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
@@ -348,6 +349,8 @@ describe("InitService scaffold", () => {
       );
       expect(envExample).toContain(expectedKey);
       expect(envExample).not.toContain(unexpectedKey);
+      expect(envExample).toContain(`SANDCASTLE_CODING_HARNESS=${agent.name}`);
+      expect(envExample).toContain(`SANDCASTLE_MODEL=${agent.defaultModel}`);
       expect(envExample).toContain("SANDCASTLE_TERMINAL_OUTPUT=");
       expect(envExample).toContain("off|verbose");
       if (expectIssue191Link) {
@@ -409,14 +412,52 @@ describe("InitService scaffold", () => {
     ).rejects.toThrow();
   });
 
-  it("errors if .sandcastle/ already exists", async () => {
+  it("updates non-prompt files when .sandcastle/ already exists", async () => {
     const dir = await makeDir();
-    const { mkdir } = await import("node:fs/promises");
+    const { mkdir, writeFile } = await import("node:fs/promises");
     await mkdir(join(dir, ".sandcastle"));
+    await writeFile(join(dir, ".sandcastle", "prompt.md"), "custom prompt");
 
-    await expect(runScaffold(dir)).rejects.toThrow(
-      ".sandcastle/ directory already exists",
+    await runScaffold(dir, { overwritePromptFiles: false });
+
+    await expect(
+      readFile(join(dir, ".sandcastle", "main.mts"), "utf-8"),
+    ).resolves.toContain("createCodingAgent()");
+    await expect(
+      readFile(join(dir, ".sandcastle", "prompt.md"), "utf-8"),
+    ).resolves.toBe("custom prompt");
+  });
+
+  it("overwrites existing prompt files when requested", async () => {
+    const dir = await makeDir();
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dir, ".sandcastle"));
+    await writeFile(join(dir, ".sandcastle", "prompt.md"), "custom prompt");
+
+    await runScaffold(dir, { overwritePromptFiles: true });
+
+    const prompt = await readFile(
+      join(dir, ".sandcastle", "prompt.md"),
+      "utf-8",
     );
+    expect(prompt).not.toBe("custom prompt");
+    expect(prompt).toContain("<promise>COMPLETE</promise>");
+  });
+
+  it("lists existing prompt files that the selected template would overwrite", async () => {
+    const dir = await makeDir();
+    const { mkdir, writeFile } = await import("node:fs/promises");
+    await mkdir(join(dir, ".sandcastle"));
+    await writeFile(join(dir, ".sandcastle", "implement-prompt.md"), "custom");
+    await writeFile(join(dir, ".sandcastle", "main.mts"), "custom main");
+
+    const existing = await Effect.runPromise(
+      listExistingPromptFiles(dir, "sequential-reviewer").pipe(
+        Effect.provide(NodeFileSystem.layer),
+      ),
+    );
+
+    expect(existing).toEqual(["implement-prompt.md"]);
   });
 
   it("includes .env, logs/, and worktrees/ in .gitignore but not patches/", async () => {
@@ -531,9 +572,8 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('claudeCode("claude-sonnet-4-6")');
-    // Should not contain the template's original model
-    expect(mainTs).not.toContain('claudeCode("claude-opus-4-6")');
+    expect(mainTs).toContain('SANDCASTLE_MODEL ?? "claude-sonnet-4-6"');
+    expect(mainTs).toContain("agent: createCodingAgent()");
   });
 
   it("scaffolds main.mts with default model when using agent default", async () => {
@@ -544,7 +584,8 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('claudeCode("claude-opus-4-6")');
+    expect(mainTs).toContain('SANDCASTLE_CODING_HARNESS ?? "claude-code"');
+    expect(mainTs).toContain('SANDCASTLE_MODEL ?? "claude-opus-4-6"');
   });
 
   // --- Template-specific tests ---
@@ -858,7 +899,7 @@ describe("InitService scaffold", () => {
     expect(dockerfile).not.toContain("{{BACKLOG_MANAGER_TOOLS}}");
   });
 
-  it("scaffolds main.mts with pi factory import when pi agent selected", async () => {
+  it("scaffolds main.mts with pi as the env-selected harness", async () => {
     const dir = await makeDir();
     await runScaffold(dir, { agent: piAgent, model: "claude-sonnet-4-6" });
 
@@ -866,8 +907,9 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('pi("claude-sonnet-4-6")');
-    expect(mainTs).not.toContain("claudeCode");
+    expect(mainTs).toContain('SANDCASTLE_CODING_HARNESS ?? "pi"');
+    expect(mainTs).toContain('SANDCASTLE_MODEL ?? "claude-sonnet-4-6"');
+    expect(mainTs).toContain("sandcastle.pi(codingModel)");
   });
 
   it("scaffolds codex agent with codex Dockerfile", async () => {
@@ -930,7 +972,7 @@ describe("InitService scaffold", () => {
     expect(containerfile).not.toContain("linux-x64-baseline");
   });
 
-  it("scaffolds main.mts with codex factory import when codex agent selected", async () => {
+  it("scaffolds main.mts with codex as the env-selected harness", async () => {
     const dir = await makeDir();
     await runScaffold(dir, { agent: codexAgent, model: "gpt-5.4-mini" });
 
@@ -938,8 +980,9 @@ describe("InitService scaffold", () => {
       join(dir, ".sandcastle", "main.mts"),
       "utf-8",
     );
-    expect(mainTs).toContain('codex("gpt-5.4-mini")');
-    expect(mainTs).not.toContain("claudeCode");
+    expect(mainTs).toContain('SANDCASTLE_CODING_HARNESS ?? "codex"');
+    expect(mainTs).toContain('SANDCASTLE_MODEL ?? "gpt-5.4-mini"');
+    expect(mainTs).toContain("sandcastle.codex(codingModel)");
   });
 
   // --- createLabel option ---
@@ -2421,11 +2464,15 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(envExample).toContain("OPENCODE_API_KEY=");
+      expect(envExample).toContain("SANDCASTLE_CODING_HARNESS=opencode");
+      expect(envExample).toContain(
+        `SANDCASTLE_MODEL=${opencodeAgent.defaultModel}`,
+      );
       expect(envExample).not.toContain("GH_TOKEN=");
 
       const main = await readFile(join(configDir, "main.mts"), "utf-8");
-      expect(main).toContain("opencode(");
-      expect(main).not.toContain("claudeCode");
+      expect(main).toContain('SANDCASTLE_CODING_HARNESS ?? "opencode"');
+      expect(main).toContain("sandcastle.opencode(codingModel)");
     });
   });
 
@@ -2489,7 +2536,7 @@ describe("InitService scaffold", () => {
       ).rejects.toThrow();
     });
 
-    it("main.ts scaffolded with type: module has correct imports and factory calls", async () => {
+    it("main.ts scaffolded with type: module has correct imports and env-driven agent", async () => {
       const dir = await makeDir();
       await writeFile(
         join(dir, "package.json"),
@@ -2502,10 +2549,11 @@ describe("InitService scaffold", () => {
         "utf-8",
       );
       expect(mainContent).toContain("@ecology91/sandcastle");
-      expect(mainContent).toContain('claudeCode("claude-opus-4-6")');
+      expect(mainContent).toContain("agent: createCodingAgent()");
+      expect(mainContent).toContain('SANDCASTLE_MODEL ?? "claude-opus-4-6"');
     });
 
-    it("main.ts scaffolded with type: module rewrites agent factory correctly", async () => {
+    it("main.ts scaffolded with type: module rewrites env harness defaults correctly", async () => {
       const dir = await makeDir();
       await writeFile(
         join(dir, "package.json"),
@@ -2517,8 +2565,8 @@ describe("InitService scaffold", () => {
         join(dir, ".sandcastle", "main.ts"),
         "utf-8",
       );
-      expect(mainContent).toContain('pi("claude-sonnet-4-6")');
-      expect(mainContent).not.toContain("claudeCode");
+      expect(mainContent).toContain('SANDCASTLE_CODING_HARNESS ?? "pi"');
+      expect(mainContent).toContain('SANDCASTLE_MODEL ?? "claude-sonnet-4-6"');
     });
 
     it("comments in scaffolded main.ts reference main.ts, not main.mts", async () => {

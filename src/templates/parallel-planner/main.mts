@@ -1,12 +1,12 @@
 // Parallel Planner — three-phase orchestration loop
 //
 // This template drives a multi-phase workflow:
-//   Phase 1 (Plan):    An opus agent analyzes open issues, builds a dependency
-//                      graph, and outputs a <plan> JSON listing unblocked issues
-//                      with their target branch names.
-//   Phase 2 (Execute): N sonnet agents run in parallel via Promise.allSettled,
+//   Phase 1 (Plan):    A planning agent analyzes open issues, builds a
+//                      dependency graph, and outputs a <plan> JSON listing
+//                      unblocked issues with their target branch names.
+//   Phase 2 (Execute): N coding agents run in parallel via Promise.allSettled,
 //                      each working a single issue on its own branch.
-//   Phase 3 (Merge):   A sonnet agent merges branches that completed and
+//   Phase 3 (Merge):   A coding agent merges branches that completed and
 //                      produced commits.
 //
 // The outer loop repeats up to MAX_ITERATIONS times so that newly unblocked
@@ -18,6 +18,7 @@
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
 
 import { exec as execCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import * as sandcastle from "@ecology91/sandcastle";
 import { docker } from "@ecology91/sandcastle/sandboxes/docker";
@@ -49,6 +50,55 @@ const taskContextCommandTemplate = "{{VIEW_TASK_COMMAND}}";
 const taskContextMaxBuffer = 10 * 1024 * 1024;
 const humanGateCommand = "{{HUMAN_GATES_COMMAND}}";
 const humanGateMaxBuffer = 10 * 1024 * 1024;
+
+const loadSandcastleEnv = (): Record<string, string> => {
+  try {
+    const env: Record<string, string> = {};
+    const content = readFileSync(".sandcastle/.env", "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex === -1) continue;
+      const key = trimmed.slice(0, eqIndex).trim();
+      let value = trimmed.slice(eqIndex + 1).trim();
+      if (
+        value.length >= 2 &&
+        ((value[0] === '"' && value[value.length - 1] === '"') ||
+          (value[0] === "'" && value[value.length - 1] === "'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      env[key] = value;
+    }
+    return env;
+  } catch {
+    return {};
+  }
+};
+
+const sandcastleEnv = { ...loadSandcastleEnv(), ...process.env };
+const codingHarness =
+  sandcastleEnv.SANDCASTLE_CODING_HARNESS ?? "{{CODING_HARNESS}}";
+const codingModel = sandcastleEnv.SANDCASTLE_MODEL ?? "{{CODING_MODEL}}";
+
+const createCodingAgent = (): sandcastle.AgentProvider => {
+  switch (codingHarness) {
+    case "claude":
+    case "claude-code":
+      return sandcastle.claudeCode(codingModel);
+    case "pi":
+      return sandcastle.pi(codingModel);
+    case "codex":
+      return sandcastle.codex(codingModel);
+    case "opencode":
+      return sandcastle.opencode(codingModel);
+    default:
+      throw new Error(
+        `Unsupported SANDCASTLE_CODING_HARNESS "${codingHarness}". Expected claude-code, pi, codex, or opencode.`,
+      );
+  }
+};
 
 type HumanGateIssue = {
   id?: string;
@@ -154,7 +204,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 1: Plan
   //
-  // The planning agent (opus, for deeper reasoning) reads the open issue list,
+  // The planning agent reads the open issue list,
   // builds a dependency graph, and selects the issues that can be worked in
   // parallel right now (i.e., no blocking dependencies on other open issues).
   //
@@ -167,8 +217,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     // One iteration is enough: the planner just needs to read and reason,
     // not write code.
     maxIterations: 1,
-    // Opus for planning: dependency analysis benefits from deeper reasoning.
-    agent: sandcastle.claudeCode("claude-opus-4-6"),
+    agent: createCodingAgent(),
     promptFile: "./.sandcastle/plan-prompt.md",
   });
 
@@ -201,7 +250,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 2: Execute
   //
-  // Spawn one sonnet agent per issue, all running concurrently.
+  // Spawn one coding agent per issue, all running concurrently.
   // The host loads deterministic task context before the implementer starts;
   // missing or empty context rejects only that issue before agent launch.
   // Each agent works on its own branch so there are no conflicts during
@@ -223,7 +272,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
         // Give each agent plenty of room to implement and iterate on tests.
         maxIterations: 100,
         // Sonnet for execution: fast and capable enough for typical issue work.
-        agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+        agent: createCodingAgent(),
         promptFile: "./.sandcastle/implement-prompt.md",
         // Prompt arguments substitute {{TASK_ID}}, {{ISSUE_TITLE}},
         // and {{BRANCH}} placeholders in implement-prompt.md before the
@@ -304,7 +353,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 3: Merge
   //
-  // One sonnet agent merges all completed branches into the current branch,
+  // One coding agent merges all completed branches into the current branch,
   // resolving any conflicts and running tests to confirm everything still works.
   //
   // The {{BRANCHES}} and {{ISSUES}} prompt arguments are lists that the agent
@@ -315,8 +364,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     sandbox: docker(),
     name: "merger",
     maxIterations: 1,
-    // Sonnet is sufficient for merge conflict resolution.
-    agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+    agent: createCodingAgent(),
     promptFile: "./.sandcastle/merge-prompt.md",
     promptArgs: {
       // A markdown list of branch names, one per line.

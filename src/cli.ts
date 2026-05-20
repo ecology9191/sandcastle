@@ -23,6 +23,7 @@ import {
   listSandboxProviders,
   getSandboxProvider,
   getNextStepsLines,
+  listExistingPromptFiles,
 } from "./InitService.js";
 import { defaultImageName } from "./sandboxes/docker.js";
 import type {
@@ -256,6 +257,30 @@ const initCommand = Command.make(
         }
       }
 
+      const existingPromptFiles = yield* listExistingPromptFiles(
+        cwd,
+        selectedTemplate,
+      ).pipe(
+        Effect.mapError(
+          (e) => new InitError({ message: e instanceof Error ? e.message : e }),
+        ),
+      );
+      let overwritePromptFiles = true;
+      if (existingPromptFiles.length > 0) {
+        const overwrite = yield* Effect.promise(() =>
+          clack.confirm({
+            message: `Overwrite existing prompt markdown files (${existingPromptFiles.join(", ")})?`,
+            initialValue: false,
+          }),
+        );
+        if (clack.isCancel(overwrite)) {
+          yield* Effect.fail(
+            new InitError({ message: "Prompt overwrite selection cancelled." }),
+          );
+        }
+        overwritePromptFiles = overwrite === true;
+      }
+
       const scaffoldResult = yield* d.spinner(
         "Scaffolding .sandcastle/ config directory...",
         scaffold(cwd, {
@@ -265,6 +290,7 @@ const initCommand = Command.make(
           createLabel: shouldCreateLabel === true,
           backlogManager: selectedBacklogManager,
           sandboxProvider: selectedSandboxProvider,
+          overwritePromptFiles,
         }).pipe(
           Effect.mapError(
             (e) =>

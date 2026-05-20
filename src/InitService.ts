@@ -14,6 +14,15 @@ const TERMINAL_OUTPUT_ENV_EXAMPLE = `# Optional terminal mirror for file-logged 
 # Leave blank/off for durable logs only; set verbose to also print prefixed lifecycle and agent stream output.
 ${TERMINAL_OUTPUT_ENV_KEY}=`;
 
+const CODING_HARNESS_ENV_KEY = "SANDCASTLE_CODING_HARNESS";
+const MODEL_ENV_KEY = "SANDCASTLE_MODEL";
+
+const getAgentConfigEnvExample = (agent: AgentEntry, model: string): string =>
+  `# Coding harness and model used by generated .sandcastle/main.* orchestration.
+# Supported harnesses: claude-code (or claude), pi, codex, opencode.
+${CODING_HARNESS_ENV_KEY}=${agent.name}
+${MODEL_ENV_KEY}=${model}`;
+
 export interface TemplateMetadata {
   name: string;
   description: string;
@@ -446,6 +455,34 @@ const getTemplateDir = (
     return join(getTemplatesDir(), templateName);
   });
 
+const isPromptMarkdownFile = (filename: string): boolean =>
+  filename.endsWith(".md");
+
+export const listExistingPromptFiles = (
+  repoDir: string,
+  templateName: string,
+): Effect.Effect<string[], Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const templateDir = yield* getTemplateDir(templateName);
+    const configDir = join(repoDir, ".sandcastle");
+    const files = yield* fs
+      .readDirectory(templateDir)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    const promptFiles = files.filter(isPromptMarkdownFile);
+    const existing = yield* Effect.all(
+      promptFiles.map((file) =>
+        fs.exists(join(configDir, file)).pipe(
+          Effect.map((exists) => (exists ? file : undefined)),
+          Effect.mapError((e) => new Error(e.message)),
+        ),
+      ),
+      { concurrency: "unbounded" },
+    );
+
+    return existing.filter((file): file is string => file !== undefined);
+  });
+
 const COMPILED_FILE_EXTENSIONS = [
   ".js",
   ".js.map",
@@ -461,6 +498,7 @@ const copyTemplateFiles = (
   templateDir: string,
   destDir: string,
   mainFilename: string,
+  preservedPromptFiles: ReadonlySet<string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
@@ -477,6 +515,9 @@ const copyTemplateFiles = (
         )
         .map((f) => {
           const destName = f === "main.mts" ? mainFilename : f;
+          if (preservedPromptFiles.has(destName)) {
+            return Effect.void;
+          }
           return fs
             .copyFile(join(templateDir, f), join(destDir, destName))
             .pipe(Effect.mapError((e) => new Error(e.message)));
@@ -486,10 +527,8 @@ const copyTemplateFiles = (
   });
 
 /**
- * Replace provider and agent factories in a scaffolded main.ts.
- *
- * Templates use `claudeCode` as the default factory. When a different agent or
- * model is selected, this function rewrites the import and factory calls.
+ * Replace runtime imports plus env-backed harness/model defaults in scaffolded
+ * main files.
  */
 const DEFAULT_RUNTIME_IMPORT_PATH = "@ecology91/sandcastle/sandboxes/docker";
 const DEFAULT_RUNTIME_FACTORY_NAME = "docker";
@@ -538,19 +577,8 @@ const rewriteMainTs = (
       );
     }
 
-    // Replace factory function name in imports (e.g. claudeCode → pi)
-    // and all factory calls with the correct model.
-    // Templates always use claudeCode as the placeholder factory.
-    content = content.replace(/\bclaudeCode\b/g, agent.factoryImport);
-    // Replace model strings in factory calls: factoryImport("any-model")
-    const factoryCallRe = new RegExp(
-      `${agent.factoryImport}\\(["']([^"']+)["']\\)`,
-      "g",
-    );
-    content = content.replace(
-      factoryCallRe,
-      `${agent.factoryImport}("${model}")`,
-    );
+    content = content.replace(/{{CODING_HARNESS}}/g, agent.name);
+    content = content.replace(/{{CODING_MODEL}}/g, model);
 
     yield* fs
       .writeFileString(mainTsPath, content)
@@ -564,13 +592,16 @@ const rewriteMainTs = (
  */
 const rewritePromptFiles = (
   configDir: string,
+  preservedPromptFiles: ReadonlySet<string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const files = yield* fs
       .readDirectory(configDir)
       .pipe(Effect.mapError((e) => new Error(e.message)));
-    const mdFiles = files.filter((f) => f.endsWith(".md"));
+    const mdFiles = files.filter(
+      (f) => f.endsWith(".md") && !preservedPromptFiles.has(f),
+    );
     yield* Effect.all(
       mdFiles.map((f) =>
         Effect.gen(function* () {
@@ -620,13 +651,16 @@ const isTextFile = (filename: string): boolean => {
 const substituteTemplateArgs = (
   configDir: string,
   backlogManager: BacklogManagerEntry,
+  preservedPromptFiles: ReadonlySet<string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const files = yield* fs
       .readDirectory(configDir)
       .pipe(Effect.mapError((e) => new Error(e.message)));
-    const textFiles = files.filter(isTextFile);
+    const textFiles = files.filter(
+      (file) => isTextFile(file) && !preservedPromptFiles.has(file),
+    );
     yield* Effect.all(
       textFiles.map((f) =>
         Effect.gen(function* () {
@@ -665,6 +699,7 @@ export interface ScaffoldOptions {
   createLabel?: boolean;
   backlogManager?: BacklogManagerEntry;
   sandboxProvider?: SandboxProviderEntry;
+  overwritePromptFiles?: boolean;
 }
 
 export interface ScaffoldResult {
@@ -708,31 +743,29 @@ export const scaffold = (
       createLabel = true,
       backlogManager = BACKLOG_MANAGER_REGISTRY[0]!, // default: github-issues
       sandboxProvider = SANDBOX_PROVIDER_REGISTRY[0]!, // default: docker
+      overwritePromptFiles = true,
     } = options;
     const fs = yield* FileSystem.FileSystem;
     const configDir = join(repoDir, ".sandcastle");
 
-    const exists = yield* fs
-      .exists(configDir)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
-    if (exists) {
-      yield* Effect.fail(
-        new Error(
-          ".sandcastle/ directory already exists. Remove it first if you want to re-initialize.",
-        ),
-      );
-    }
-
     const mainFilename = yield* detectMainFilename(repoDir);
+    const templateDir = yield* getTemplateDir(templateName);
+    const preservedPromptFiles = new Set(
+      overwritePromptFiles
+        ? []
+        : yield* listExistingPromptFiles(repoDir, templateName),
+    );
 
     yield* fs
-      .makeDirectory(configDir, { recursive: false })
+      .makeDirectory(configDir, { recursive: true })
       .pipe(Effect.mapError((e) => new Error(e.message)));
 
-    const templateDir = yield* getTemplateDir(templateName);
-
-    // Build .env.example from agent + backlog manager env blocks
-    const envExampleParts = [agent.envExample, TERMINAL_OUTPUT_ENV_EXAMPLE];
+    // Build .env.example from agent defaults plus required provider env blocks.
+    const envExampleParts = [
+      getAgentConfigEnvExample(agent, model),
+      agent.envExample,
+      TERMINAL_OUTPUT_ENV_EXAMPLE,
+    ];
     if (backlogManager.envExample) {
       envExampleParts.push(backlogManager.envExample);
     }
@@ -752,12 +785,17 @@ export const scaffold = (
         fs
           .writeFileString(join(configDir, ".env.example"), envExampleContent)
           .pipe(Effect.mapError((e) => new Error(e.message))),
-        copyTemplateFiles(templateDir, configDir, mainFilename),
+        copyTemplateFiles(
+          templateDir,
+          configDir,
+          mainFilename,
+          preservedPromptFiles,
+        ),
       ],
       { concurrency: "unbounded" },
     );
 
-    // Rewrite main file with the selected sandbox, agent factory, and model
+    // Rewrite main file with the selected sandbox and env-backed agent defaults.
     yield* rewriteMainTs(
       configDir,
       agent,
@@ -767,11 +805,15 @@ export const scaffold = (
     );
 
     // Replace backlog manager template arguments in all text files (must run before label stripping)
-    yield* substituteTemplateArgs(configDir, backlogManager);
+    yield* substituteTemplateArgs(
+      configDir,
+      backlogManager,
+      preservedPromptFiles,
+    );
 
     // Strip --label Sandcastle from prompt files when the user declined label creation
     if (!createLabel) {
-      yield* rewritePromptFiles(configDir);
+      yield* rewritePromptFiles(configDir, preservedPromptFiles);
     }
 
     return { mainFilename };

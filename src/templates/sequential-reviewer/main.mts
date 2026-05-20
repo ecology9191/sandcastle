@@ -1,10 +1,10 @@
 // Sequential Reviewer — implement-then-review loop
 //
 // This template drives a two-phase workflow per issue:
-//   Phase 1 (Implement): A sonnet agent picks an open backlog issue, works on it
+//   Phase 1 (Implement): A coding agent picks an open backlog issue, works on it
 //                        on a dedicated branch, commits the changes, and signals
 //                        completion.
-//   Phase 2 (Review):    A second sonnet agent reviews the branch diff and either
+//   Phase 2 (Review):    A second coding agent reviews the branch diff and either
 //                        approves it or makes corrections directly on the branch.
 //
 // The outer loop repeats up to MAX_ITERATIONS times, processing one issue per
@@ -17,6 +17,7 @@
 //   "scripts": { "sandcastle": "npx tsx .sandcastle/main.mts" }
 
 import { exec as execCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
 import * as sandcastle from "@ecology91/sandcastle";
 import { docker } from "@ecology91/sandcastle/sandboxes/docker";
@@ -46,6 +47,55 @@ const copyToWorktree = ["node_modules"];
 
 const humanGateCommand = "{{HUMAN_GATES_COMMAND}}";
 const humanGateMaxBuffer = 10 * 1024 * 1024;
+
+const loadSandcastleEnv = (): Record<string, string> => {
+  try {
+    const env: Record<string, string> = {};
+    const content = readFileSync(".sandcastle/.env", "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex === -1) continue;
+      const key = trimmed.slice(0, eqIndex).trim();
+      let value = trimmed.slice(eqIndex + 1).trim();
+      if (
+        value.length >= 2 &&
+        ((value[0] === '"' && value[value.length - 1] === '"') ||
+          (value[0] === "'" && value[value.length - 1] === "'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      env[key] = value;
+    }
+    return env;
+  } catch {
+    return {};
+  }
+};
+
+const sandcastleEnv = { ...loadSandcastleEnv(), ...process.env };
+const codingHarness =
+  sandcastleEnv.SANDCASTLE_CODING_HARNESS ?? "{{CODING_HARNESS}}";
+const codingModel = sandcastleEnv.SANDCASTLE_MODEL ?? "{{CODING_MODEL}}";
+
+const createCodingAgent = (): sandcastle.AgentProvider => {
+  switch (codingHarness) {
+    case "claude":
+    case "claude-code":
+      return sandcastle.claudeCode(codingModel);
+    case "pi":
+      return sandcastle.pi(codingModel);
+    case "codex":
+      return sandcastle.codex(codingModel);
+    case "opencode":
+      return sandcastle.opencode(codingModel);
+    default:
+      throw new Error(
+        `Unsupported SANDCASTLE_CODING_HARNESS "${codingHarness}". Expected claude-code, pi, codex, or opencode.`,
+      );
+  }
+};
 
 type HumanGateIssue = {
   id?: string;
@@ -127,7 +177,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 1: Implement
   //
-  // A sonnet agent picks the next open backlog issue, creates a branch, writes
+  // A coding agent picks the next open backlog issue, creates a branch, writes
   // the implementation (using RGR: Red → Green → Repeat → Refactor), and
   // commits the result.
   //
@@ -141,7 +191,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     branchStrategy: { type: "merge-to-head" },
     name: "implementer",
     maxIterations: 100,
-    agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+    agent: createCodingAgent(),
     promptFile: "./.sandcastle/implement-prompt.md",
   });
 
@@ -159,7 +209,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
   // -------------------------------------------------------------------------
   // Phase 2: Review
   //
-  // A second sonnet agent reviews the diff of the branch produced by Phase 1.
+  // A second coding agent reviews the diff of the branch produced by Phase 1.
   // It uses the {{BRANCH}} prompt argument to inspect the right branch, and
   // either approves or makes corrections directly on the branch.
   // -------------------------------------------------------------------------
@@ -170,7 +220,7 @@ for (let iteration = 1; iteration <= MAX_ITERATIONS; iteration++) {
     branchStrategy: { type: "branch", branch },
     name: "reviewer",
     maxIterations: 1,
-    agent: sandcastle.claudeCode("claude-sonnet-4-6"),
+    agent: createCodingAgent(),
     promptFile: "./.sandcastle/review-prompt.md",
     // Prompt arguments substitute {{BRANCH}} in review-prompt.md before the
     // agent sees the prompt.

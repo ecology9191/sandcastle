@@ -1,6 +1,7 @@
 import { exec as execCallback } from "node:child_process";
+import { readFileSync } from "node:fs";
 import { promisify } from "node:util";
-import { run, claudeCode } from "@ecology91/sandcastle";
+import * as sandcastle from "@ecology91/sandcastle";
 import { docker } from "@ecology91/sandcastle/sandboxes/docker";
 
 // Simple loop: an agent that picks open backlog issues one by one and closes them.
@@ -10,6 +11,55 @@ import { docker } from "@ecology91/sandcastle/sandboxes/docker";
 const exec = promisify(execCallback);
 const humanGateCommand = "{{HUMAN_GATES_COMMAND}}";
 const humanGateMaxBuffer = 10 * 1024 * 1024;
+
+const loadSandcastleEnv = (): Record<string, string> => {
+  try {
+    const env: Record<string, string> = {};
+    const content = readFileSync(".sandcastle/.env", "utf8");
+    for (const line of content.split("\n")) {
+      const trimmed = line.trim();
+      if (!trimmed || trimmed.startsWith("#")) continue;
+      const eqIndex = trimmed.indexOf("=");
+      if (eqIndex === -1) continue;
+      const key = trimmed.slice(0, eqIndex).trim();
+      let value = trimmed.slice(eqIndex + 1).trim();
+      if (
+        value.length >= 2 &&
+        ((value[0] === '"' && value[value.length - 1] === '"') ||
+          (value[0] === "'" && value[value.length - 1] === "'"))
+      ) {
+        value = value.slice(1, -1);
+      }
+      env[key] = value;
+    }
+    return env;
+  } catch {
+    return {};
+  }
+};
+
+const sandcastleEnv = { ...loadSandcastleEnv(), ...process.env };
+const codingHarness =
+  sandcastleEnv.SANDCASTLE_CODING_HARNESS ?? "{{CODING_HARNESS}}";
+const codingModel = sandcastleEnv.SANDCASTLE_MODEL ?? "{{CODING_MODEL}}";
+
+const createCodingAgent = (): sandcastle.AgentProvider => {
+  switch (codingHarness) {
+    case "claude":
+    case "claude-code":
+      return sandcastle.claudeCode(codingModel);
+    case "pi":
+      return sandcastle.pi(codingModel);
+    case "codex":
+      return sandcastle.codex(codingModel);
+    case "opencode":
+      return sandcastle.opencode(codingModel);
+    default:
+      throw new Error(
+        `Unsupported SANDCASTLE_CODING_HARNESS "${codingHarness}". Expected claude-code, pi, codex, or opencode.`,
+      );
+  }
+};
 
 type HumanGateIssue = {
   id?: string;
@@ -82,17 +132,16 @@ const stopIfHumanGateOpen = async (): Promise<void> => {
 
 await stopIfHumanGateOpen();
 
-await run({
+await sandcastle.run({
   // A name for this run, shown as a prefix in log output.
   name: "worker",
 
   // Sandbox provider — Docker is the default runtime.
   sandbox: docker(),
 
-  // The agent provider. Pass a model string to claudeCode() — sonnet balances
-  // capability and speed for most tasks. Switch to claude-opus-4-6 for harder
-  // problems, or claude-haiku-4-5-20251001 for speed.
-  agent: claudeCode("claude-sonnet-4-6"),
+  // The agent provider. Set SANDCASTLE_CODING_HARNESS and SANDCASTLE_MODEL in
+  // .sandcastle/.env to switch harnesses or models without editing this file.
+  agent: createCodingAgent(),
 
   // Path to the prompt file. Shell expressions inside are evaluated inside the
   // sandbox at the start of each iteration, so the agent always sees fresh data.
