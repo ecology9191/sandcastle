@@ -724,30 +724,33 @@ describe("opencode factory", () => {
     expect(provider).not.toHaveProperty("dockerfileTemplate");
   });
 
-  it("buildPrintCommand requests JSON output, thinking, model, and prompt", () => {
+  it("buildPrintCommand requests JSON output, thinking, model, and stdin prompt", () => {
     const provider = opencode("opencode/big-pickle");
     const { command, stdin } = provider.buildPrintCommand(opts("do something"));
     expect(command).toBe(
-      "opencode run --format json --thinking --dangerously-skip-permissions --model 'opencode/big-pickle' -- 'do something'",
+      "opencode run --format json --thinking --dangerously-skip-permissions --model 'opencode/big-pickle'",
     );
-    expect(stdin).toBeUndefined();
+    expect(stdin).toBe("do something");
   });
 
   it("buildPrintCommand omits --dangerously-skip-permissions when false", () => {
     const provider = opencode("opencode/big-pickle");
-    const { command } = provider.buildPrintCommand({
+    const { command, stdin } = provider.buildPrintCommand({
       prompt: "do something",
       dangerouslySkipPermissions: false,
     });
     expect(command).toBe(
-      "opencode run --format json --thinking --model 'opencode/big-pickle' -- 'do something'",
+      "opencode run --format json --thinking --model 'opencode/big-pickle'",
     );
+    expect(stdin).toBe("do something");
   });
 
-  it("buildPrintCommand shell-escapes the prompt", () => {
+  it("buildPrintCommand delivers prompt via stdin, not argv", () => {
     const provider = opencode("opencode/big-pickle");
-    const { command } = provider.buildPrintCommand(opts("it's a test"));
-    expect(command).toContain("'it'\\''s a test'");
+    const { command, stdin } = provider.buildPrintCommand(opts("it's a test"));
+    expect(command).not.toContain("it's a test");
+    expect(command).not.toContain("'it'\\''s a test'");
+    expect(stdin).toBe("it's a test");
   });
 
   it("buildPrintCommand shell-escapes the model", () => {
@@ -802,12 +805,13 @@ describe("opencode factory", () => {
     expect(command).toContain("--variant 'provider/high'\\''s max'");
   });
 
-  it("buildPrintCommand keeps -- before option-looking prompts", () => {
+  it("buildPrintCommand keeps option-looking prompts out of argv", () => {
     const provider = opencode("opencode/big-pickle");
-    const { command } = provider.buildPrintCommand(
+    const { command, stdin } = provider.buildPrintCommand(
       opts("--share --attach=thing"),
     );
-    expect(command).toContain("-- '--share --attach=thing'");
+    expect(command).not.toContain("-- '--share --attach=thing'");
+    expect(stdin).toBe("--share --attach=thing");
   });
 
   it("buildInteractiveArgs stays unchanged for the OpenCode TUI", () => {

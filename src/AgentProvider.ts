@@ -496,7 +496,8 @@ export const opencode = (
       ? ` --variant ${shellEscape(options.variant)}`
       : "";
     return {
-      command: `opencode run --format json --thinking${permissionFlag} --model ${shellEscape(model)}${variantFlag} -- ${shellEscape(prompt)}`,
+      command: `opencode run --format json --thinking${permissionFlag} --model ${shellEscape(model)}${variantFlag}`,
+      stdin: prompt,
     };
   },
 
