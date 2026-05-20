@@ -499,13 +499,13 @@ const copyTemplateFiles = (
   destDir: string,
   mainFilename: string,
   preservedPromptFiles: ReadonlySet<string>,
-): Effect.Effect<void, Error, FileSystem.FileSystem> =>
+): Effect.Effect<string[], Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
     const files = yield* fs
       .readDirectory(templateDir)
       .pipe(Effect.mapError((e) => new Error(e.message)));
-    yield* Effect.all(
+    const copied = yield* Effect.all(
       files
         .filter(
           (f) =>
@@ -516,14 +516,34 @@ const copyTemplateFiles = (
         .map((f) => {
           const destName = f === "main.mts" ? mainFilename : f;
           if (preservedPromptFiles.has(destName)) {
-            return Effect.void;
+            return Effect.succeed(undefined);
           }
           return fs
             .copyFile(join(templateDir, f), join(destDir, destName))
-            .pipe(Effect.mapError((e) => new Error(e.message)));
+            .pipe(
+              Effect.map(() => destName),
+              Effect.mapError((e) => new Error(e.message)),
+            );
         }),
       { concurrency: "unbounded" },
     );
+    return copied.filter((file): file is string => file !== undefined);
+  });
+
+const writeFileIfMissing = (
+  path: string,
+  content: string,
+): Effect.Effect<boolean, Error, FileSystem.FileSystem> =>
+  Effect.gen(function* () {
+    const fs = yield* FileSystem.FileSystem;
+    const exists = yield* fs
+      .exists(path)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    if (exists) return false;
+    yield* fs
+      .writeFileString(path, content)
+      .pipe(Effect.mapError((e) => new Error(e.message)));
+    return true;
   });
 
 /**
@@ -592,16 +612,11 @@ const rewriteMainTs = (
  */
 const rewritePromptFiles = (
   configDir: string,
-  preservedPromptFiles: ReadonlySet<string>,
+  generatedFiles: ReadonlySet<string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const files = yield* fs
-      .readDirectory(configDir)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
-    const mdFiles = files.filter(
-      (f) => f.endsWith(".md") && !preservedPromptFiles.has(f),
-    );
+    const mdFiles = [...generatedFiles].filter((f) => f.endsWith(".md"));
     yield* Effect.all(
       mdFiles.map((f) =>
         Effect.gen(function* () {
@@ -651,16 +666,11 @@ const isTextFile = (filename: string): boolean => {
 const substituteTemplateArgs = (
   configDir: string,
   backlogManager: BacklogManagerEntry,
-  preservedPromptFiles: ReadonlySet<string>,
+  generatedFiles: ReadonlySet<string>,
 ): Effect.Effect<void, Error, FileSystem.FileSystem> =>
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem;
-    const files = yield* fs
-      .readDirectory(configDir)
-      .pipe(Effect.mapError((e) => new Error(e.message)));
-    const textFiles = files.filter(
-      (file) => isTextFile(file) && !preservedPromptFiles.has(file),
-    );
+    const textFiles = [...generatedFiles].filter(isTextFile);
     yield* Effect.all(
       textFiles.map((f) =>
         Effect.gen(function* () {
@@ -759,6 +769,7 @@ export const scaffold = (
     yield* fs
       .makeDirectory(configDir, { recursive: true })
       .pipe(Effect.mapError((e) => new Error(e.message)));
+    const generatedFiles = new Set<string>();
 
     // Build .env.example from agent defaults plus required provider env blocks.
     const envExampleParts = [
@@ -771,17 +782,13 @@ export const scaffold = (
     }
     const envExampleContent = envExampleParts.join("\n") + "\n";
 
-    yield* Effect.all(
+    const [wroteContainerfile, , , copiedTemplateFiles] = yield* Effect.all(
       [
-        fs
-          .writeFileString(
-            join(configDir, sandboxProvider.containerfileName),
-            agent.dockerfileTemplate,
-          )
-          .pipe(Effect.mapError((e) => new Error(e.message))),
-        fs
-          .writeFileString(join(configDir, ".gitignore"), GITIGNORE)
-          .pipe(Effect.mapError((e) => new Error(e.message))),
+        writeFileIfMissing(
+          join(configDir, sandboxProvider.containerfileName),
+          agent.dockerfileTemplate,
+        ),
+        writeFileIfMissing(join(configDir, ".gitignore"), GITIGNORE),
         fs
           .writeFileString(join(configDir, ".env.example"), envExampleContent)
           .pipe(Effect.mapError((e) => new Error(e.message))),
@@ -791,29 +798,34 @@ export const scaffold = (
           mainFilename,
           preservedPromptFiles,
         ),
-      ],
+      ] as const,
       { concurrency: "unbounded" },
     );
+    if (wroteContainerfile) {
+      generatedFiles.add(sandboxProvider.containerfileName);
+    }
+    generatedFiles.add(".env.example");
+    for (const file of copiedTemplateFiles) {
+      generatedFiles.add(file);
+    }
 
     // Rewrite main file with the selected sandbox and env-backed agent defaults.
-    yield* rewriteMainTs(
-      configDir,
-      agent,
-      model,
-      mainFilename,
-      sandboxProvider,
-    );
+    if (generatedFiles.has(mainFilename)) {
+      yield* rewriteMainTs(
+        configDir,
+        agent,
+        model,
+        mainFilename,
+        sandboxProvider,
+      );
+    }
 
     // Replace backlog manager template arguments in all text files (must run before label stripping)
-    yield* substituteTemplateArgs(
-      configDir,
-      backlogManager,
-      preservedPromptFiles,
-    );
+    yield* substituteTemplateArgs(configDir, backlogManager, generatedFiles);
 
     // Strip --label Sandcastle from prompt files when the user declined label creation
     if (!createLabel) {
-      yield* rewritePromptFiles(configDir, preservedPromptFiles);
+      yield* rewritePromptFiles(configDir, generatedFiles);
     }
 
     return { mainFilename };

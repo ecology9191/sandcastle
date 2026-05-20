@@ -1,5 +1,5 @@
 import { exec } from "node:child_process";
-import { mkdtemp, writeFile } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -45,6 +45,15 @@ describe("sandcastle CLI", () => {
     expect(stdout).not.toContain("cleanup-sandbox");
     expect(stdout).not.toContain("sync-in");
     expect(stdout).not.toContain("sync-out");
+  });
+
+  it("package updates do not run install-time repo migrations", async () => {
+    const packageJson = JSON.parse(
+      await readFile(join(import.meta.dirname, "..", "package.json"), "utf-8"),
+    ) as { scripts?: Record<string, string> };
+    expect(packageJson.scripts?.["preinstall"]).toBeUndefined();
+    expect(packageJson.scripts?.["install"]).toBeUndefined();
+    expect(packageJson.scripts?.["postinstall"]).toBeUndefined();
   });
 
   it("docker --help shows build-image and remove-image subcommands", async () => {

@@ -626,7 +626,7 @@ Skipped branches are printed in the operator output instead of being silently ig
 
 ### `sandcastle init`
 
-Scaffolds the `.sandcastle/` config directory and builds the container image. This is the first command you run in a new repo. You choose a sandbox provider (Docker or Podman) during init — selecting Podman writes a `Containerfile` instead of `Dockerfile` and uses `sandcastle podman build-image` for the build step.
+Scaffolds or refreshes the `.sandcastle/` config directory and builds the container image. This is the first command you run in a new repo, and it is safe to re-run after updating Sandcastle. You choose a sandbox provider (Docker or Podman) during init — selecting Podman writes a `Containerfile` instead of `Dockerfile` and uses `sandcastle podman build-image` for the build step.
 
 | Option         | Required | Default                      | Description                                                          |
 | -------------- | -------- | ---------------------------- | -------------------------------------------------------------------- |
@@ -645,7 +645,7 @@ Creates the following files:
 └── .gitignore      # Ignores .env, logs/
 ```
 
-Errors if `.sandcastle/` already exists to prevent overwriting customizations.
+When `.sandcastle/` already exists, init refreshes generated template files such as `main.ts`/`main.mts` and `.env.example`, creates missing scaffold files, and preserves existing sandbox provider files such as `Dockerfile`/`Containerfile`, `.gitignore`, and runtime artifacts such as logs and worktrees. Existing prompt markdown files are only replaced when you confirm the prompt overwrite question.
 
 ### `sandcastle docker build-image`
 

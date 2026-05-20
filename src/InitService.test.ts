@@ -412,20 +412,76 @@ describe("InitService scaffold", () => {
     ).rejects.toThrow();
   });
 
-  it("updates non-prompt files when .sandcastle/ already exists", async () => {
+  it("refreshes generated main and env example while preserving existing user-owned files", async () => {
     const dir = await makeDir();
     const { mkdir, writeFile } = await import("node:fs/promises");
     await mkdir(join(dir, ".sandcastle"));
+    await writeFile(join(dir, ".sandcastle", "main.mts"), "custom main");
     await writeFile(join(dir, ".sandcastle", "prompt.md"), "custom prompt");
+    await writeFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "CUSTOM_ENV_EXAMPLE=1\n",
+    );
+    await writeFile(
+      join(dir, ".sandcastle", "Dockerfile"),
+      "FROM custom-image\n",
+    );
+    await writeFile(
+      join(dir, ".sandcastle", ".gitignore"),
+      ".env\ncustom-cache/\n",
+    );
+    await writeFile(join(dir, ".sandcastle", "preflight.ts"), "custom helper");
+    await writeFile(join(dir, ".sandcastle", "main.js"), "compiled js");
+    await writeFile(
+      join(dir, ".sandcastle", "plan.json"),
+      '{"steps":["keep"]}\n',
+    );
+    await mkdir(join(dir, ".sandcastle", "logs"));
+    await writeFile(join(dir, ".sandcastle", "logs", "run.log"), "run log");
+    await mkdir(join(dir, ".sandcastle", "worktrees"));
+    await writeFile(
+      join(dir, ".sandcastle", "worktrees", "branch.txt"),
+      "worktree",
+    );
 
     await runScaffold(dir, { overwritePromptFiles: false });
 
-    await expect(
-      readFile(join(dir, ".sandcastle", "main.mts"), "utf-8"),
-    ).resolves.toContain("createCodingAgent()");
+    const main = await readFile(join(dir, ".sandcastle", "main.mts"), "utf-8");
+    expect(main).not.toBe("custom main");
+    expect(main).toContain("createCodingAgent()");
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).not.toBe("CUSTOM_ENV_EXAMPLE=1\n");
+    expect(envExample).toContain("SANDCASTLE_CODING_HARNESS=claude-code");
+    expect(envExample).toContain("SANDCASTLE_MODEL=claude-opus-4-6");
+
     await expect(
       readFile(join(dir, ".sandcastle", "prompt.md"), "utf-8"),
     ).resolves.toBe("custom prompt");
+    await expect(
+      readFile(join(dir, ".sandcastle", "Dockerfile"), "utf-8"),
+    ).resolves.toBe("FROM custom-image\n");
+    await expect(
+      readFile(join(dir, ".sandcastle", ".gitignore"), "utf-8"),
+    ).resolves.toBe(".env\ncustom-cache/\n");
+    await expect(
+      readFile(join(dir, ".sandcastle", "preflight.ts"), "utf-8"),
+    ).resolves.toBe("custom helper");
+    await expect(
+      readFile(join(dir, ".sandcastle", "main.js"), "utf-8"),
+    ).resolves.toBe("compiled js");
+    await expect(
+      readFile(join(dir, ".sandcastle", "plan.json"), "utf-8"),
+    ).resolves.toBe('{"steps":["keep"]}\n');
+    await expect(
+      readFile(join(dir, ".sandcastle", "logs", "run.log"), "utf-8"),
+    ).resolves.toBe("run log");
+    await expect(
+      readFile(join(dir, ".sandcastle", "worktrees", "branch.txt"), "utf-8"),
+    ).resolves.toBe("worktree");
   });
 
   it("overwrites existing prompt files when requested", async () => {
