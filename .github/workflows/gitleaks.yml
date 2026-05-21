@@ -1,0 +1,16 @@
+name: Secret scan
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  gitleaks:
+    uses: ecology9191/security-workflows/.github/workflows/gitleaks.yml@main
+    secrets:
+      GITLEAKS_LICENSE: ${{ secrets.GITLEAKS_LICENSE }}
