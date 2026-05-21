@@ -25,6 +25,7 @@ import type {
 } from "./SandboxProvider.js";
 import { resolveEnv } from "./EnvResolver.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
+import { stripGitCredentialEnv } from "./OpenCodeGuardrails.js";
 import { copyToWorktree } from "./CopyToWorktree.js";
 import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
@@ -173,12 +174,15 @@ export const interactive = async (
 
     // 2. Resolve env vars
     const resolvedEnv = yield* resolveEnv(hostRepoDir);
-    const env = mergeProviderEnv({
+    const mergedEnv = mergeProviderEnv({
       resolvedEnv,
       agentProviderEnv: provider.env,
       sandboxProviderEnv: sandboxProvider.env,
     });
-    const effectiveEnv = { ...env, ...(options.env ?? {}) };
+    const effectiveEnvBase = { ...mergedEnv, ...(options.env ?? {}) };
+    const effectiveEnv = provider.gitRemoteGuardrails
+      ? stripGitCredentialEnv(effectiveEnvBase)
+      : effectiveEnvBase;
 
     // 3. Capture host's current branch
     const currentHostBranch = yield* getCurrentBranch(hostRepoDir);

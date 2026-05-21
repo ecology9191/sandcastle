@@ -6,7 +6,12 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { Effect, Layer } from "effect";
 import { describe, expect, it, vi } from "vitest";
-import { claudeCode, pi, type AgentProvider } from "./AgentProvider.js";
+import {
+  claudeCode,
+  opencode,
+  pi,
+  type AgentProvider,
+} from "./AgentProvider.js";
 import { createSandbox, type CreateSandboxOptions } from "./createSandbox.js";
 import { Sandbox } from "./SandboxFactory.js";
 import {
@@ -1199,6 +1204,58 @@ describe("createSandbox", () => {
       expect(result.exitCode).toBe(0);
       expect(Array.isArray(result.commits)).toBe(true);
       expect(receivedArgs).toContain("do something interactively");
+    } finally {
+      await sandbox.close();
+      await rm(hostDir, { recursive: true, force: true });
+    }
+  });
+
+  it("sandbox.interactive() carries OpenCode guardrail env in reused sandboxes", async () => {
+    const hostDir = await mkdtemp(join(tmpdir(), "sandbox-test-"));
+    await initRepo(hostDir);
+    await commitFile(hostDir, "init.txt", "init", "initial commit");
+
+    let receivedArgs: string[] = [];
+
+    const interactiveProvider = createBindMountSandboxProvider({
+      name: "test-opencode-interactive",
+      create: async (opts) => ({
+        worktreePath: opts.worktreePath,
+        exec: async (cmd, execOpts) => {
+          const cwd = execOpts?.cwd ?? opts.worktreePath;
+          const result = await execAsync(cmd, { cwd });
+          return {
+            stdout: result.stdout,
+            stderr: result.stderr,
+            exitCode: 0,
+          };
+        },
+        interactiveExec: async (args) => {
+          receivedArgs = args;
+          return { exitCode: 0 };
+        },
+        copyFileIn: async () => {},
+        copyFileOut: async () => {},
+        close: async () => {},
+      }),
+    });
+
+    const sandbox = await createSandbox({
+      branch: "test-opencode-interactive",
+      sandbox: interactiveProvider,
+      cwd: hostDir,
+    });
+
+    try {
+      await sandbox.interactive({
+        agent: opencode("opencode/big-pickle"),
+        prompt: "do something interactively",
+      });
+
+      expect(receivedArgs[0]).toBe("env");
+      expect(receivedArgs[1]).toContain("OPENCODE_PERMISSION=");
+      expect(receivedArgs).toContain("GIT_TERMINAL_PROMPT=0");
+      expect(receivedArgs).toContain("opencode");
     } finally {
       await sandbox.close();
       await rm(hostDir, { recursive: true, force: true });

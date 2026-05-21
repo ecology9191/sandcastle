@@ -40,6 +40,7 @@ import {
 } from "./AgentStreamEmitter.js";
 import { resolveEnv } from "./EnvResolver.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
+import { stripGitCredentialEnv } from "./OpenCodeGuardrails.js";
 import { startSandbox } from "./startSandbox.js";
 import { syncOut } from "./syncOut.js";
 import * as WorktreeManager from "./WorktreeManager.js";
@@ -176,6 +177,8 @@ export interface WorktreeCreateSandboxOptions {
   readonly copyToWorktree?: string[];
   /** Override default timeouts for built-in lifecycle steps. Unset keys keep their defaults. */
   readonly timeouts?: Timeouts;
+  /** Strip GitHub and git credential material from the sandbox env. Defaults to true. */
+  readonly gitCredentialGuardrails?: boolean;
   /** @internal Test-only overrides to bypass the sandbox provider. */
   readonly _test?: {
     readonly buildSandboxLayer?: (
@@ -231,7 +234,12 @@ export const createWorktree = async (
       baseBranch,
     });
     if (options.copyToWorktree && options.copyToWorktree.length > 0) {
-      yield* copyToWorktree(options.copyToWorktree, hostRepoDir, info.path, options.timeouts?.copyToWorktreeMs);
+      yield* copyToWorktree(
+        options.copyToWorktree,
+        hostRepoDir,
+        info.path,
+        options.timeouts?.copyToWorktreeMs,
+      );
     }
     // Run host.onWorktreeReady hooks after copyToWorktree, before sandbox creation
     if (options.hooks?.host?.onWorktreeReady?.length) {
@@ -292,12 +300,15 @@ export const createWorktree = async (
 
       // 2. Resolve env vars
       const resolvedEnv = yield* resolveEnv(hostRepoDir);
-      const env = mergeProviderEnv({
+      const mergedEnv = mergeProviderEnv({
         resolvedEnv,
         agentProviderEnv: provider.env,
         sandboxProviderEnv: resolvedSandbox.env,
       });
-      const effectiveEnv = { ...env, ...(opts.env ?? {}) };
+      const effectiveEnvBase = { ...mergedEnv, ...(opts.env ?? {}) };
+      const effectiveEnv = provider.gitRemoteGuardrails
+        ? stripGitCredentialEnv(effectiveEnvBase)
+        : effectiveEnvBase;
 
       // 3. Prompt args substitution (skip when no prompt, or when inline passthrough)
       let substitutedPrompt = rawPrompt;
@@ -499,12 +510,15 @@ export const createWorktree = async (
 
       // 2. Resolve env vars
       const resolvedEnv = yield* resolveEnv(hostRepoDir);
-      const env = mergeProviderEnv({
+      const mergedEnv = mergeProviderEnv({
         resolvedEnv,
         agentProviderEnv: provider.env,
         sandboxProviderEnv: sandboxProvider.env,
       });
-      const effectiveEnv = { ...env, ...(opts.env ?? {}) };
+      const effectiveEnvBase = { ...mergedEnv, ...(opts.env ?? {}) };
+      const effectiveEnv = provider.gitRemoteGuardrails
+        ? stripGitCredentialEnv(effectiveEnvBase)
+        : effectiveEnvBase;
 
       // 3. Prompt args substitution (skipped for inline prompts — passthrough)
       const userArgs = opts.promptArgs ?? {};
@@ -676,6 +690,7 @@ export const createWorktree = async (
       hooks: opts.hooks,
       copyToWorktree: opts.copyToWorktree,
       timeouts: opts.timeouts,
+      gitCredentialGuardrails: opts.gitCredentialGuardrails,
       _test: opts._test,
     });
   };

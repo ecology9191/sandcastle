@@ -17,6 +17,7 @@ import {
   stripHostSandcastleEnv,
 } from "./EnvResolver.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
+import { stripGitCredentialEnv } from "./OpenCodeGuardrails.js";
 import { orchestrate, type IterationResult } from "./Orchestrator.js";
 import { defaultSessionPathsLayer } from "./SessionPaths.js";
 import {
@@ -81,6 +82,8 @@ export interface CreateSandboxOptions {
   readonly copyToWorktree?: string[];
   /** Override default timeouts for built-in lifecycle steps. Unset keys keep their defaults. */
   readonly timeouts?: Timeouts;
+  /** Strip GitHub and git credential material from the sandbox env. Defaults to true. */
+  readonly gitCredentialGuardrails?: boolean;
   /** @internal Test-only overrides to bypass the sandbox provider. */
   readonly _test?: {
     readonly buildSandboxLayer?: (
@@ -519,6 +522,8 @@ export interface CreateSandboxFromWorktreeOptions {
   readonly hooks?: SandboxHooks;
   readonly copyToWorktree?: string[];
   readonly timeouts?: Timeouts;
+  /** Strip GitHub and git credential material from the sandbox env. Defaults to true. */
+  readonly gitCredentialGuardrails?: boolean;
   readonly _test?: {
     readonly buildSandboxLayer?: (
       sandboxDir: string,
@@ -569,11 +574,15 @@ export const createSandboxFromWorktree = async (
     const resolvedEnv = await Effect.runPromise(
       resolveEnv(hostRepoDir).pipe(Effect.provide(NodeContext.layer)),
     );
-    const env = mergeProviderEnv({
+    const mergedEnv = mergeProviderEnv({
       resolvedEnv: stripHostSandcastleEnv(resolvedEnv),
       agentProviderEnv: {},
       sandboxProviderEnv: options.sandbox.env,
     });
+    const env =
+      options.gitCredentialGuardrails === false
+        ? mergedEnv
+        : stripGitCredentialEnv(mergedEnv);
 
     const provider = options.sandbox;
 
@@ -736,11 +745,15 @@ export const createSandbox = async (
     const resolvedEnv = await Effect.runPromise(
       resolveEnv(hostRepoDir).pipe(Effect.provide(NodeContext.layer)),
     );
-    const env = mergeProviderEnv({
+    const mergedEnv = mergeProviderEnv({
       resolvedEnv: stripHostSandcastleEnv(resolvedEnv),
       agentProviderEnv: {},
       sandboxProviderEnv: options.sandbox.env,
     });
+    const env =
+      options.gitCredentialGuardrails === false
+        ? mergedEnv
+        : stripGitCredentialEnv(mergedEnv);
 
     const provider = options.sandbox;
 

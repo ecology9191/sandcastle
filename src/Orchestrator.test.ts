@@ -1601,7 +1601,7 @@ describe("Orchestrator error handling", () => {
       const fsLayer = makeLocalSandboxLayer(dir);
       return Layer.succeed(Sandbox, {
         exec: (command, options) => {
-          if (command.startsWith("opencode ")) {
+          if (command.includes("opencode run ")) {
             return Effect.succeed({
               stdout: stdoutContent,
               stderr: "",
@@ -1655,7 +1655,7 @@ describe("Orchestrator error handling", () => {
       const fsLayer = makeLocalSandboxLayer(dir);
       return Layer.succeed(Sandbox, {
         exec: (command, options) => {
-          if (command.startsWith("opencode ")) {
+          if (command.includes("opencode run ")) {
             return Effect.succeed({
               stdout: "",
               stderr: "",
@@ -1769,7 +1769,7 @@ describe("Orchestrator error handling", () => {
       const fsLayer = makeLocalSandboxLayer(dir);
       return Layer.succeed(Sandbox, {
         exec: (command, options) => {
-          if (command.startsWith("opencode ")) {
+          if (command.includes("opencode run ")) {
             return Effect.succeed({
               stdout: "some stdout output",
               stderr: "fatal error from stderr",
@@ -2823,7 +2823,7 @@ const makeMockOpenCodeAgentLayer = (
 
   return Layer.succeed(Sandbox, {
     exec: (command, execOptions) => {
-      if (command.startsWith("opencode ")) {
+      if (command.includes("opencode run ")) {
         return Effect.sync(() => {
           if (execOptions?.onLine) {
             for (const line of streamLines) {

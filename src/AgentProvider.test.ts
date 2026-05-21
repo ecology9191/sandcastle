@@ -727,9 +727,11 @@ describe("opencode factory", () => {
   it("buildPrintCommand requests JSON output, thinking, model, and stdin prompt", () => {
     const provider = opencode("opencode/big-pickle");
     const { command, stdin } = provider.buildPrintCommand(opts("do something"));
-    expect(command).toBe(
-      "opencode run --format json --thinking --dangerously-skip-permissions --model 'opencode/big-pickle'",
-    );
+    expect(command).toContain("OPENCODE_PERMISSION=");
+    expect(command).toContain("GIT_TERMINAL_PROMPT=0 opencode run");
+    expect(command).toContain("--format json --thinking");
+    expect(command).toContain("--model 'opencode/big-pickle'");
+    expect(command).not.toContain("--dangerously-skip-permissions");
     expect(stdin).toBe("do something");
   });
 
@@ -739,10 +741,42 @@ describe("opencode factory", () => {
       prompt: "do something",
       dangerouslySkipPermissions: false,
     });
-    expect(command).toBe(
-      "opencode run --format json --thinking --model 'opencode/big-pickle'",
-    );
+    expect(command).toContain("opencode run --format json --thinking");
+    expect(command).toContain("--model 'opencode/big-pickle'");
+    expect(command).not.toContain("--dangerously-skip-permissions");
     expect(stdin).toBe("do something");
+  });
+
+  it("buildPrintCommand preserves skip-permissions only when guardrails are disabled", () => {
+    const provider = opencode("opencode/big-pickle", {
+      gitRemoteGuardrails: false,
+    });
+    const { command } = provider.buildPrintCommand(opts("do something"));
+    expect(command).toBe(
+      "opencode run --format json --thinking --dangerously-skip-permissions --model 'opencode/big-pickle'",
+    );
+  });
+
+  it("injects default no-push guardrail environment", () => {
+    const provider = opencode("opencode/big-pickle", {
+      env: { OPENCODE_API_KEY: "key" },
+    });
+    const permission = JSON.parse(provider.env.OPENCODE_PERMISSION!);
+
+    expect(provider.gitRemoteGuardrails).toBe(true);
+    expect(provider.env.OPENCODE_API_KEY).toBe("key");
+    expect(permission.bash["git push*"]).toBe("deny");
+    expect(permission.bash["gh repo create*"]).toBe("deny");
+  });
+
+  it("does not inject guardrail environment when disabled", () => {
+    const provider = opencode("opencode/big-pickle", {
+      gitRemoteGuardrails: false,
+      env: { OPENCODE_API_KEY: "key" },
+    });
+
+    expect(provider.gitRemoteGuardrails).toBe(false);
+    expect(provider.env).toEqual({ OPENCODE_API_KEY: "key" });
   });
 
   it("buildPrintCommand delivers prompt via stdin, not argv", () => {
@@ -814,10 +848,31 @@ describe("opencode factory", () => {
     expect(stdin).toBe("--share --attach=thing");
   });
 
-  it("buildInteractiveArgs stays unchanged for the OpenCode TUI", () => {
+  it("buildInteractiveArgs carries guardrail env for the OpenCode TUI", () => {
     const provider = opencode("opencode/big-pickle", {
       variant: "provider/reasoning=max",
     });
+    const args = provider.buildInteractiveArgs!(opts("do something"));
+
+    expect(args[0]).toBe("env");
+    expect(args[1]).toContain("OPENCODE_PERMISSION=");
+    expect(args).toEqual([
+      "env",
+      args[1],
+      "GIT_TERMINAL_PROMPT=0",
+      "opencode",
+      "--model",
+      "opencode/big-pickle",
+      "-p",
+      "do something",
+    ]);
+  });
+
+  it("buildInteractiveArgs omits guardrail env when disabled", () => {
+    const provider = opencode("opencode/big-pickle", {
+      gitRemoteGuardrails: false,
+    });
+
     expect(provider.buildInteractiveArgs!(opts("do something"))).toEqual([
       "opencode",
       "--model",
@@ -1179,12 +1234,15 @@ describe("opencode factory", () => {
     const provider = opencode("opencode/big-pickle", {
       env: { OPENCODE_API_KEY: "sk-test" },
     });
-    expect(provider.env).toEqual({ OPENCODE_API_KEY: "sk-test" });
+    expect(provider.env.OPENCODE_API_KEY).toBe("sk-test");
+    expect(provider.env.OPENCODE_PERMISSION).toBeDefined();
   });
 
-  it("defaults env to empty object when not provided", () => {
+  it("defaults env to the no-push permission policy when not provided", () => {
     const provider = opencode("opencode/big-pickle");
-    expect(provider.env).toEqual({});
+    expect(
+      JSON.parse(provider.env.OPENCODE_PERMISSION!).bash["git push*"],
+    ).toBe("deny");
   });
 });
 

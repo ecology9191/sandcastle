@@ -214,7 +214,9 @@ _Avoid_: "log event" (the log file contains more than just agent output), "displ
 - The **agent**'s Dockerfile template contains **template arguments** (e.g. `{{BACKLOG_MANAGER_TOOLS}}`) that **init** fills in based on the selected **backlog manager**
 - **Build-image** and **remove-image** are namespaced under their provider in the CLI (e.g. `sandcastle docker build-image`)
 - The **agent provider** is selected via the `agent` field in config or `--agent` CLI flag
-- At launch, Sandcastle resolves env vars from **config directory** `.env` and `process.env`, then passes the full env map into the **sandbox**
+- At launch, Sandcastle resolves env vars from **config directory** `.env` and `process.env`, then passes the env map into the **sandbox**. Guarded OpenCode runs strip GitHub and git credential env before sandbox launch.
+- OpenCode **agent providers** enable a no-push guardrail by default: Sandcastle supplies `OPENCODE_PERMISSION` deny rules for `git push`, git remote mutation, and GitHub repo/PR/release creation commands instead of using `--dangerously-skip-permissions`.
+- Guarded OpenCode sandboxes reject user mounts that expose `~/.config/gh`, `~/.git-credentials`, `~/.gitconfig`, or git credential-manager paths. Mounting `~/.ssh` remains allowed.
 - **Inline prompts** bypass **prompt argument substitution** and **prompt expansion** entirely -- they are passed to the **agent** as-is. `promptArgs` cannot be combined with an **inline prompt**; doing so raises an error
 - **Prompt argument substitution** and **prompt expansion** only apply to **prompt templates** (prompts sourced via `promptFile`)
 - **Prompt argument substitution** runs once after prompt resolution, replacing `{{KEY}}` placeholders with values from **prompt arguments** -- this happens on the **host**, before the **sandbox** exists
@@ -292,7 +294,7 @@ _Avoid_: "log event" (the log file contains more than just agent output), "displ
 
 > **Dev:** "How does Sandcastle know which **agent provider** to use?"
 
-> **Domain expert:** "The `agent` option passed to `run()`, or the `--agent` CLI flag. Sandcastle loads env vars and passes them straight through to the **sandbox** -- the **agent** handles missing credentials on its own."
+> **Domain expert:** "The `agent` option passed to `run()`, or the `--agent` CLI flag. Sandcastle loads env vars and passes them through to the **sandbox**, with provider-specific safety filters. For OpenCode, Sandcastle strips GitHub and git credential env and uses `OPENCODE_PERMISSION` to deny push and remote-creation commands by default."
 
 ### Built-in prompt arguments
 

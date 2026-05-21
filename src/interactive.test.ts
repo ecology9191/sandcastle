@@ -62,7 +62,10 @@ describe("buildInteractiveArgs with prompts", () => {
   it("opencode passes prompt via -p flag", () => {
     const provider = opencode("opencode/big-pickle");
     const args = provider.buildInteractiveArgs!(interactiveOpts("fix the bug"));
-    expect(args[0]).toBe("opencode");
+    expect(args[0]).toBe("env");
+    expect(args[1]).toContain("OPENCODE_PERMISSION=");
+    expect(args).toContain("GIT_TERMINAL_PROMPT=0");
+    expect(args).toContain("opencode");
     const pIdx = args.indexOf("-p");
     expect(pIdx).toBeGreaterThan(-1);
     expect(args[pIdx + 1]).toBe("fix the bug");

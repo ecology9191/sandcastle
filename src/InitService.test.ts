@@ -374,6 +374,22 @@ describe("InitService scaffold", () => {
     expect(envExample).toContain("GH_TOKEN=");
   });
 
+  it("does not scaffold GH_TOKEN for OpenCode even with github-issues backlog", async () => {
+    const dir = await makeDir();
+    await runScaffold(dir, {
+      agent: opencodeAgent,
+      model: opencodeAgent.defaultModel,
+      backlogManager: getBacklogManager("github-issues"),
+    });
+
+    const envExample = await readFile(
+      join(dir, ".sandcastle", ".env.example"),
+      "utf-8",
+    );
+    expect(envExample).not.toContain("GH_TOKEN=");
+    expect(envExample).toContain("OpenCode Sandcastle runs strip GitHub");
+  });
+
   it("does not scaffold env-driven OpenCode variant selection", async () => {
     const dir = await makeDir();
     await runScaffold(dir, {

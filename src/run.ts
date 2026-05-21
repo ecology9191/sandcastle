@@ -36,6 +36,7 @@ import {
   noopAgentStreamEmitterLayer,
   type AgentStreamEvent,
 } from "./AgentStreamEmitter.js";
+import { stripGitCredentialEnv } from "./OpenCodeGuardrails.js";
 import type { SandboxHooks } from "./SandboxLifecycle.js";
 import { mergeProviderEnv } from "./mergeProviderEnv.js";
 import { hostSessionStore } from "./SessionStore.js";
@@ -367,11 +368,14 @@ export const run = async (options: RunOptions): Promise<RunResult> => {
   );
   const terminalOutputMode = resolveTerminalOutputMode(resolvedEnv);
   const sandboxResolvedEnv = stripHostSandcastleEnv(resolvedEnv);
-  const env = mergeProviderEnv({
+  const mergedEnv = mergeProviderEnv({
     resolvedEnv: sandboxResolvedEnv,
     agentProviderEnv: provider.env,
     sandboxProviderEnv: options.sandbox.env,
   });
+  const env = provider.gitRemoteGuardrails
+    ? stripGitCredentialEnv(mergedEnv)
+    : mergedEnv;
 
   // Always capture the host's current branch for the TARGET_BRANCH built-in
   // prompt argument. When using a temp branch, it also prefixes the log filename.

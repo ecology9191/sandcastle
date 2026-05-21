@@ -10,6 +10,7 @@ import { tmpdir, homedir } from "node:os";
 import { isAbsolute, resolve, join } from "node:path";
 import { mkdtemp, writeFile } from "node:fs/promises";
 import type { MountConfig } from "./MountConfig.js";
+import { assertNoGitCredentialMount } from "./OpenCodeGuardrails.js";
 import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 
 /**
@@ -100,11 +101,13 @@ export const resolveUserMounts = (
       );
     }
 
-    return {
+    const resolvedMount = {
       hostPath: resolvedHostPath,
       sandboxPath: resolveSandboxPath(m.sandboxPath, sandboxHomedir),
       ...(m.readonly ? { readonly: true } : {}),
     };
+    assertNoGitCredentialMount(resolvedMount);
+    return resolvedMount;
   });
 
 /**

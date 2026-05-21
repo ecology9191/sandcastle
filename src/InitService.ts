@@ -14,6 +14,9 @@ const TERMINAL_OUTPUT_ENV_EXAMPLE = `# Optional terminal mirror for file-logged 
 # Leave blank/off for durable logs only; set verbose to also print prefixed lifecycle and agent stream output.
 ${TERMINAL_OUTPUT_ENV_KEY}=`;
 
+const OPENCODE_GITHUB_AUTH_NOTICE = `# OpenCode Sandcastle runs strip GitHub and git credential auth by default.
+# GH_TOKEN is intentionally not scaffolded for OpenCode; use a non-GitHub backlog or public gh reads.`;
+
 const CODING_HARNESS_ENV_KEY = "SANDCASTLE_CODING_HARNESS";
 const MODEL_ENV_KEY = "SANDCASTLE_MODEL";
 
@@ -777,8 +780,10 @@ export const scaffold = (
       agent.envExample,
       TERMINAL_OUTPUT_ENV_EXAMPLE,
     ];
-    if (backlogManager.envExample) {
+    if (backlogManager.envExample && agent.name !== "opencode") {
       envExampleParts.push(backlogManager.envExample);
+    } else if (backlogManager.envExample && agent.name === "opencode") {
+      envExampleParts.push(OPENCODE_GITHUB_AUTH_NOTICE);
     }
     const envExampleContent = envExampleParts.join("\n") + "\n";
 

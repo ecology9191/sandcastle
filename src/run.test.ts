@@ -969,6 +969,34 @@ describe("SANDCASTLE_TERMINAL_OUTPUT", () => {
     expect(createCalls[0]).not.toHaveProperty("SANDCASTLE_TERMINAL_OUTPUT");
   });
 
+  it("strips GitHub and git credential env for guarded agents", async () => {
+    const guardedAgent: AgentProvider = {
+      ...terminalOutputAgent,
+      gitRemoteGuardrails: true,
+      env: {
+        OPENCODE_API_KEY: "opencode-key",
+        GIT_ASKPASS: "askpass",
+      },
+    };
+    const harness = createTerminalOutputHarness(
+      "GH_TOKEN=gh\nGITHUB_TOKEN=github\nGIT_CONFIG_KEY_0=credential.helper\n",
+      { agent: guardedAgent },
+    );
+
+    await run({
+      agent: guardedAgent,
+      sandbox: harness.sandbox,
+      cwd: harness.dir,
+      prompt: "test",
+      logging: { type: "stdout" },
+    });
+
+    expect(harness.createCalls[0]).toEqual({
+      OPENCODE_API_KEY: "opencode-key",
+      GIT_TERMINAL_PROMPT: "0",
+    });
+  });
+
   it("labels host and sandbox setup hooks in verbose output without changing the run log", async () => {
     const harness = createTerminalOutputHarness(
       "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
@@ -1162,7 +1190,7 @@ describe("SANDCASTLE_TERMINAL_OUTPUT", () => {
       "SANDCASTLE_TERMINAL_OUTPUT=verbose\n",
       {
         agent: opencode("test-model"),
-        commandMatches: (command) => command.startsWith("opencode "),
+        commandMatches: (command) => command.includes("opencode run "),
         streamLines: [
           JSON.stringify({
             type: "reasoning",

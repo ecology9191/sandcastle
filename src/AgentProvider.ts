@@ -1,3 +1,5 @@
+import { withOpenCodeNoPushGuardrails } from "./OpenCodeGuardrails.js";
+
 export type ParsedStreamEvent =
   | { type: "text"; text: string }
   | { type: "result"; result: string }
@@ -139,6 +141,8 @@ export interface AgentProvider {
   readonly name: string;
   /** Environment variables injected by this agent provider. Merged at launch time with env resolver and sandbox provider env. */
   readonly env: Record<string, string>;
+  /** When true, Sandcastle strips GitHub/git credential material from sandbox env before launch. */
+  readonly gitRemoteGuardrails?: boolean;
   /** When true, session capture is enabled for this provider. Default: true for Claude Code, false for others. */
   readonly captureSessions: boolean;
   buildPrintCommand(options: AgentCommandOptions): PrintCommand;
@@ -475,46 +479,68 @@ export interface OpenCodeOptions {
   readonly env?: Record<string, string>;
   /** Provider-specific OpenCode model variant/reasoning setting. */
   readonly variant?: string;
+  /** Disable the default OpenCode no-push/no-remote guardrail. */
+  readonly gitRemoteGuardrails?: boolean;
 }
 
 export const opencode = (
   model: string,
   options?: OpenCodeOptions,
-): AgentProvider => ({
-  name: "opencode",
-  env: options?.env ?? {},
-  captureSessions: false,
+): AgentProvider => {
+  const gitRemoteGuardrails = options?.gitRemoteGuardrails !== false;
+  const env = gitRemoteGuardrails
+    ? withOpenCodeNoPushGuardrails(options?.env ?? {})
+    : (options?.env ?? {});
+  const guardrailEnvPrefix = gitRemoteGuardrails
+    ? `OPENCODE_PERMISSION=${shellEscape(env.OPENCODE_PERMISSION!)} GIT_TERMINAL_PROMPT=0 `
+    : "";
+  return {
+    name: "opencode",
+    env,
+    gitRemoteGuardrails,
+    captureSessions: false,
 
-  buildPrintCommand({
-    prompt,
-    dangerouslySkipPermissions,
-  }: AgentCommandOptions): PrintCommand {
-    const permissionFlag = dangerouslySkipPermissions
-      ? " --dangerously-skip-permissions"
-      : "";
-    const variantFlag = options?.variant
-      ? ` --variant ${shellEscape(options.variant)}`
-      : "";
-    return {
-      command: `opencode run --format json --thinking${permissionFlag} --model ${shellEscape(model)}${variantFlag}`,
-      stdin: prompt,
-    };
-  },
+    buildPrintCommand({
+      prompt,
+      dangerouslySkipPermissions,
+    }: AgentCommandOptions): PrintCommand {
+      const permissionFlag =
+        dangerouslySkipPermissions && !gitRemoteGuardrails
+          ? " --dangerously-skip-permissions"
+          : "";
+      const variantFlag = options?.variant
+        ? ` --variant ${shellEscape(options.variant)}`
+        : "";
+      return {
+        command: `${guardrailEnvPrefix}opencode run --format json --thinking${permissionFlag} --model ${shellEscape(model)}${variantFlag}`,
+        stdin: prompt,
+      };
+    },
 
-  buildInteractiveArgs({ prompt }: AgentCommandOptions): string[] {
-    const args = ["opencode", "--model", model];
-    if (prompt) args.push("-p", prompt);
-    return args;
-  },
+    buildInteractiveArgs({ prompt }: AgentCommandOptions): string[] {
+      const args = gitRemoteGuardrails
+        ? [
+            "env",
+            `OPENCODE_PERMISSION=${env.OPENCODE_PERMISSION!}`,
+            "GIT_TERMINAL_PROMPT=0",
+            "opencode",
+            "--model",
+            model,
+          ]
+        : ["opencode", "--model", model];
+      if (prompt) args.push("-p", prompt);
+      return args;
+    },
 
-  parseStreamLine(line: string): ParsedStreamEvent[] {
-    return createOpenCodeStreamParser().parseStreamLine(line);
-  },
+    parseStreamLine(line: string): ParsedStreamEvent[] {
+      return createOpenCodeStreamParser().parseStreamLine(line);
+    },
 
-  createStreamParser(): AgentStreamParser {
-    return createOpenCodeStreamParser();
-  },
-});
+    createStreamParser(): AgentStreamParser {
+      return createOpenCodeStreamParser();
+    },
+  };
+};
 
 // ---------------------------------------------------------------------------
 // Claude Code agent provider

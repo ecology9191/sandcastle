@@ -14,7 +14,11 @@ import { SANDBOX_REPO_DIR } from "./SandboxFactory.js";
 
 vi.mock("node:fs", () => ({
   existsSync: (p: string) =>
-    p === "/existing/path" || p === "/home/testuser/data",
+    p === "/existing/path" ||
+    p === "/home/testuser/data" ||
+    p === "/home/testuser/.config/gh" ||
+    p === "/home/testuser/.gitconfig" ||
+    p === "/home/testuser/.ssh",
 }));
 
 vi.mock("node:os", async (importOriginal) => {
@@ -174,6 +178,38 @@ describe("resolveUserMounts", () => {
       undefined,
     );
     expect(result[0]!.hostPath).toBe("/home/testuser/data");
+  });
+
+  it("rejects GitHub CLI credential mounts", () => {
+    expect(() =>
+      resolveUserMounts(
+        [{ hostPath: "~/.config/gh", sandboxPath: "~/.config/gh" }],
+        "/home/agent",
+      ),
+    ).toThrow(/credential material/);
+  });
+
+  it("rejects git credential config mounts", () => {
+    expect(() =>
+      resolveUserMounts(
+        [{ hostPath: "~/.gitconfig", sandboxPath: "~/.gitconfig" }],
+        "/home/agent",
+      ),
+    ).toThrow(/credential material/);
+  });
+
+  it("allows ssh key directory mounts", () => {
+    const result = resolveUserMounts(
+      [{ hostPath: "~/.ssh", sandboxPath: "~/.ssh", readonly: true }],
+      "/home/agent",
+    );
+    expect(result).toEqual([
+      {
+        hostPath: "/home/testuser/.ssh",
+        sandboxPath: "/home/agent/.ssh",
+        readonly: true,
+      },
+    ]);
   });
 });
 

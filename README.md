@@ -301,14 +301,15 @@ if (closeResult.preservedWorktreePath) {
 
 #### `CreateSandboxOptions`
 
-| Option           | Type            | Default         | Description                                                          |
-| ---------------- | --------------- | --------------- | -------------------------------------------------------------------- |
-| `branch`         | string          | —               | **Required.** Explicit branch for the sandbox                        |
-| `sandbox`        | SandboxProvider | —               | **Required.** Sandbox provider (e.g. `docker()`, `podman()`)         |
-| `cwd`            | string          | `process.cwd()` | Host repo directory — relative paths resolve against `process.cwd()` |
-| `hooks`          | SandboxHooks    | —               | Lifecycle hooks (`host.*`, `sandbox.*`) — run once at creation time  |
-| `copyToWorktree` | string[]        | —               | Host-relative file paths to copy into the sandbox at creation time   |
-| `timeouts`       | Timeouts        | —               | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)     |
+| Option                    | Type            | Default         | Description                                                          |
+| ------------------------- | --------------- | --------------- | -------------------------------------------------------------------- |
+| `branch`                  | string          | —               | **Required.** Explicit branch for the sandbox                        |
+| `sandbox`                 | SandboxProvider | —               | **Required.** Sandbox provider (e.g. `docker()`, `podman()`)         |
+| `cwd`                     | string          | `process.cwd()` | Host repo directory — relative paths resolve against `process.cwd()` |
+| `hooks`                   | SandboxHooks    | —               | Lifecycle hooks (`host.*`, `sandbox.*`) — run once at creation time  |
+| `copyToWorktree`          | string[]        | —               | Host-relative file paths to copy into the sandbox at creation time   |
+| `timeouts`                | Timeouts        | —               | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)     |
+| `gitCredentialGuardrails` | boolean         | `true`          | Strip GitHub and git credential env from reusable sandbox startup    |
 
 #### `Sandbox`
 
@@ -471,12 +472,13 @@ await sandbox.close();
 
 #### `WorktreeCreateSandboxOptions`
 
-| Option           | Type            | Default | Description                                                         |
-| ---------------- | --------------- | ------- | ------------------------------------------------------------------- |
-| `sandbox`        | SandboxProvider | —       | **Required.** Sandbox provider (e.g. `docker()`)                    |
-| `hooks`          | SandboxHooks    | —       | Lifecycle hooks (`host.*`, `sandbox.*`)                             |
-| `copyToWorktree` | string[]        | —       | Host-relative file paths to copy into the worktree at creation time |
-| `timeouts`       | Timeouts        | —       | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)    |
+| Option                    | Type            | Default | Description                                                         |
+| ------------------------- | --------------- | ------- | ------------------------------------------------------------------- |
+| `sandbox`                 | SandboxProvider | —       | **Required.** Sandbox provider (e.g. `docker()`)                    |
+| `hooks`                   | SandboxHooks    | —       | Lifecycle hooks (`host.*`, `sandbox.*`)                             |
+| `copyToWorktree`          | string[]        | —       | Host-relative file paths to copy into the worktree at creation time |
+| `timeouts`                | Timeouts        | —       | Override default timeouts (e.g. `{ copyToWorktreeMs: 120_000 }`)    |
+| `gitCredentialGuardrails` | boolean         | `true`  | Strip GitHub and git credential env from reusable sandbox startup   |
 
 ## How it works
 
@@ -704,6 +706,12 @@ Removes the Podman image.
 | `timeouts`           | Timeouts           | —                             | Override default timeouts for built-in lifecycle steps. Currently supports `{ copyToWorktreeMs?: number }` (default: 60 000).                                   |
 
 OpenCode runs inside the sandbox container, so host `opencode login` state is not available there. Set `OPENCODE_API_KEY` in `.sandcastle/.env` or pass it via `opencode(model, { env: { OPENCODE_API_KEY } })`.
+
+OpenCode also enables no-push guardrails by default. Sandcastle gives OpenCode an explicit `OPENCODE_PERMISSION` policy that allows normal autonomous work but denies `git push`, git remote creation/mutation, and GitHub repo/PR/release creation commands. Guarded OpenCode runs do not use `--dangerously-skip-permissions`.
+
+When those guardrails are active, Sandcastle strips GitHub and git credential material from the sandbox environment, including `GH_TOKEN`, `GITHUB_TOKEN`, token-like GitHub env vars, git credential helper env, git config injection env, and git askpass hooks. User mounts that expose `~/.config/gh`, `~/.git-credentials`, `~/.gitconfig`, or git credential-manager paths are rejected. Mounting `~/.ssh` is still allowed.
+
+Authenticated `gh` issue workflows are intentionally unavailable inside guarded OpenCode sandboxes. Use Beads, unauthenticated public GitHub reads, or an explicit `opencode(model, { gitRemoteGuardrails: false })` opt-out if you accept the remote-push risk.
 
 ### `RunResult`
 
