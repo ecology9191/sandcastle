@@ -1,5 +1,11 @@
 # @ecology91/sandcastle
 
+## 0.5.17
+
+### Patch Changes
+
+- 924afbe: Add default OpenCode no-push guardrails and strip GitHub/git credential material from guarded sandboxes.
+
 ## 0.5.16
 
 ### Patch Changes
