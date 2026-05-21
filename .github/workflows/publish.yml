@@ -1,0 +1,44 @@
+name: Publish
+
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify version matches release tag
+        run: |
+          TAG="${{ github.event.release.tag_name }}"
+          TAG_VERSION="${TAG#v}"
+          PKG_VERSION="$(jq -r .version package.json)"
+          if [ "$TAG_VERSION" != "$PKG_VERSION" ]; then
+            echo "Version mismatch: release tag v${TAG_VERSION} != package.json ${PKG_VERSION}"
+            exit 1
+          fi
+
+      - name: Validate
+        run: npm run validate
+
+      - name: Publish to npm
+        run: npm publish --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
